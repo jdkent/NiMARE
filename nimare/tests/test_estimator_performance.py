@@ -231,6 +231,32 @@ def test_estimators(simulatedata_cbma, meta_alg, kern, corr):
     }
 
 
+def test_mask_issue(simulatedata_cbma, mni_mask):
+    _, (_, dataset) = simulatedata_cbma
+    fwe = FWECorrector(method="montecarlo", voxel_thresh=ALPHA, n_iters=100, n_cores=N_CORES)
+    meta = ale.ALE()
+    res = meta.fit(dataset)
+    res_mask = res.masker.mask_img
+    res_mask_data = res_mask.get_fdata().astype(bool)
+    mni_mask_data = mni_mask.get_fdata().astype(bool)
+
+    # this said 30 voxels are different between the two masks
+    (res_mask_data != mni_mask_data).sum()
+
+    cres = fwe.transform(res)
+
+    cres_img = cres.get_map("logp_level-voxel_corr-FWE_method-montecarlo", return_type='image')
+    cres_arr = cres.get_map("logp_level-voxel_corr-FWE_method-montecarlo", return_type='array')
+
+    mni_cres = cres_img.get_fdata()[mni_mask_data]
+    mask_cres = cres_img.get_fdata()[res_mask_data]
+    # these two are equivalent
+    (cres_arr == mask_cres).all()
+
+    # mni_cres has 30 more entries than mask_cres
+    mni_cres.shape != mask_cres.shape
+
+        
 def _create_signal_mask(mask, ground_truth_foci_ijks, r):
     """
     Creates complementary binary images.
