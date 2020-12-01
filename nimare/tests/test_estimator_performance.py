@@ -77,7 +77,8 @@ def signal_masks(simulatedata_cbma):
         pytest.param((ale.ALE, {"null_method": "analytic"}), id="ale+analytic"),
         pytest.param((mkda.MKDADensity, {"null_method": "empirical"}), id="mkda+empirical"),
         pytest.param((mkda.MKDADensity, {"null_method": "analytic"}), id="mkda+analytic"),
-        pytest.param((mkda.KDA, {}), id="kda"),
+        pytest.param((mkda.KDA, {"null_method": "empirical"}), id="kda+empirical"),
+        pytest.param((mkda.KDA, {"null_method": "analytic"}), id="kda+analytic"),
     ],
 )
 def meta_est(request):
@@ -173,6 +174,16 @@ def meta_res(simulatedata_cbma, meta, random):
         and not isinstance(meta.kernel_transformer, kernel.MKDAKernel)
     ):
         meta_expectation = pytest.raises(IndexError)
+    elif (
+        isinstance(meta, mkda.KDA)
+        and isinstance(meta.kernel_transformer, kernel.ALEKernel)
+        and meta.get_params().get("null_method") == "analytic"
+    ):
+        # hist_bins = np.arange(
+        #   -step_size / 2, max_poss_value + (step_size * 1.5) + 0.001, step_size
+        # )
+        # MemoryError: Unable to allocate 248. GiB for an array with shape (33301285756,) and data type float64
+        meta_expectation = pytest.raises(MemoryError)
     else:
         meta_expectation = does_not_raise()
 
