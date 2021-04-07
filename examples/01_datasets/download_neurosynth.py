@@ -21,7 +21,7 @@ NiMARE.
 # --------------------------------
 import os
 
-from neurosynth.base.dataset import download
+from nimare.extract import fetch_neurosynth
 
 import nimare
 
@@ -33,7 +33,7 @@ if not os.path.isdir(out_dir):
     os.mkdir(out_dir)
 
 if not os.path.isfile(os.path.join(out_dir, "database.txt")):
-    download(out_dir, unpack=True)
+    fetch_neurosynth(out_dir, unpack=True)
 
 ###############################################################################
 # Convert Neurosynth database to NiMARE dataset file
