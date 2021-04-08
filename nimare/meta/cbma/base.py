@@ -1,8 +1,10 @@
 """CBMA methods from the ALE and MKDA families."""
 import logging
 import multiprocessing as mp
+from functools import partial
 
 import nibabel as nib
+from nilearn.input_data import NiftiMasker
 import numpy as np
 import pandas as pd
 from scipy import ndimage
@@ -16,6 +18,15 @@ from ...utils import add_metadata_to_dataframe, check_type, use_memmap
 from ..kernel import KernelTransformer
 
 LGR = logging.getLogger(__name__)
+
+
+def _quick_transform(fs, mask_data):
+    if isinstance(fs, str):
+        return nib.load(fs).get_fdata(caching="unchanged", dtype="float32")[mask_data]
+    else:
+        return np.vstack(
+            [nib.load(f).get_fdata(caching="unchanged", dtype="float32")[mask_data] for f in fs]
+        )
 
 
 class CBMAEstimator(MetaEstimator):
@@ -140,7 +151,12 @@ class CBMAEstimator(MetaEstimator):
             2D numpy array of shape (n_studies, n_voxels) with MA values.
         """
         if maps_key in self.inputs_.keys():
-            mask_data = self.masker.mask_img.get_fdata().astype(bool)
+            if isinstance(self.masker, str):
+                mask_data = self.masker.mask_img.get_fdata().astype(bool)
+                transform_fxn = partial(_quick_transform, mask_data=mask_data)
+            else:
+                transform_fxn = self.masker.transform
+
             LGR.debug(f"Loading pre-generated MA maps ({maps_key}).")
             if self.low_memory:
                 temp = self.masker.transform(self.inputs_[maps_key][0])
@@ -152,14 +168,9 @@ class CBMAEstimator(MetaEstimator):
                     shape=unmasked_shape,
                 )
                 for i, f in enumerate(self.inputs_[maps_key]):
-                    ma_maps[i, :] = nib.load(f).get_fdata(caching="unchanged", dtype="float32")[mask_data]
+                    ma_maps[i, :] = transform_fxn(f)
             else:
-                ma_maps = np.vstack(
-                    [
-                        nib.load(img).get_fdata(caching="unchanged", dtype="float32")[mask_data]
-                        for img in self.inputs_[maps_key]
-                    ]
-                )
+                ma_maps = transform_fxn(self.inputs_[maps_key])
         else:
             LGR.debug(f"Generating MA maps from coordinates ({coords_key}).")
             ma_maps = self.kernel_transformer.transform(
