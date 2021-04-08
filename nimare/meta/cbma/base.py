@@ -160,7 +160,6 @@ class CBMAEstimator(MetaEstimator):
                         for img in self.inputs_[maps_key]
                     ]
                 )
-                ma_maps = self.masker.transform(self.inputs_[maps_key])
         else:
             LGR.debug(f"Generating MA maps from coordinates ({coords_key}).")
             ma_maps = self.kernel_transformer.transform(
