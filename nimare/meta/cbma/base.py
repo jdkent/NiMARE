@@ -140,6 +140,7 @@ class CBMAEstimator(MetaEstimator):
             2D numpy array of shape (n_studies, n_voxels) with MA values.
         """
         if maps_key in self.inputs_.keys():
+            mask_data = self.masker.mask_img.get_fdata().astype(bool)
             LGR.debug(f"Loading pre-generated MA maps ({maps_key}).")
             if self.low_memory:
                 temp = self.masker.transform(self.inputs_[maps_key][0])
@@ -151,8 +152,14 @@ class CBMAEstimator(MetaEstimator):
                     shape=unmasked_shape,
                 )
                 for i, f in enumerate(self.inputs_[maps_key]):
-                    ma_maps[i, :] = self.masker.transform(f)
+                    ma_maps[i, :] = nib.load(f).get_fdata(caching="unchanged", dtype="float32")[mask_data]
             else:
+                ma_maps = np.vstack(
+                    [
+                        nib.load(img).get_fdata(caching="unchanged", dtype="float32")[mask_data]
+                        for img in self.inputs_[maps_key]
+                    ]
+                )
                 ma_maps = self.masker.transform(self.inputs_[maps_key])
         else:
             LGR.debug(f"Generating MA maps from coordinates ({coords_key}).")
