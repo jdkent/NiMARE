@@ -15,12 +15,13 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 from nilearn.input_data import NiftiMasker
-import sparse
 
 from nimare import references
 from nimare.due import due
+from scipy import ndimage
 
 import patsy
+import sparse
 
 LGR = logging.getLogger(__name__)
 
@@ -209,16 +210,6 @@ def mm2vox(xyz, affine):
     return ijk
 
 
-@due.dcite(
-    references.LANCASTER_TRANSFORM,
-    description="Introduces the Lancaster MNI-to-Talairach transform, "
-    "as well as its inverse, the Talairach-to-MNI "
-    "transform.",
-)
-@due.dcite(
-    references.LANCASTER_TRANSFORM_VALIDATION,
-    description="Validates the Lancaster MNI-to-Talairach and Talairach-to-MNI transforms.",
-)
 def tal2mni(coords):
     """Convert coordinates from Talairach space to MNI space.
 
@@ -287,16 +278,6 @@ def tal2mni(coords):
     return out_coords
 
 
-@due.dcite(
-    references.LANCASTER_TRANSFORM,
-    description="Introduces the Lancaster MNI-to-Talairach transform, "
-    "as well as its inverse, the Talairach-to-MNI "
-    "transform.",
-)
-@due.dcite(
-    references.LANCASTER_TRANSFORM_VALIDATION,
-    description="Validates the Lancaster MNI-to-Talairach and Talairach-to-MNI transforms.",
-)
 def mni2tal(coords):
     """Convert coordinates from MNI space Talairach space.
 
@@ -986,7 +967,7 @@ def tqdm_joblib(tqdm_object):
         tqdm_object.close()
 
 
-def unique_rows(ar):
+def unique_rows(ar, return_counts=False):
     """Remove repeated rows from a 2D array.
 
     In particular, if given an array of coordinates of shape
@@ -996,11 +977,16 @@ def unique_rows(ar):
     ----------
     ar : 2-D ndarray
         The input array.
+    return_counts : :obj:`bool`, optional
+        If True, also return the number of times each unique item appears in ar.
 
     Returns
     -------
     ar_out : 2-D ndarray
         A copy of the input array with repeated rows removed.
+    unique_counts : :obj:`np.ndarray`, optional
+        The number of times each of the unique values comes up in the original array.
+        Only provided if return_counts is True.
 
     Raises
     ------
@@ -1021,8 +1007,10 @@ def unique_rows(ar):
     ...                [1, 0, 1]], np.uint8)
     >>> unique_rows(ar)
     array([[0, 1, 0],
-           [1, 0, 1]], dtype=uint8)
+        [1, 0, 1]], dtype=uint8)
 
+    License
+    -------
     Copyright (C) 2019, the scikit-image team
     All rights reserved.
     """
@@ -1034,10 +1022,148 @@ def unique_rows(ar):
     # see each row as a single item, we create a view of each row as a
     # byte string of length itemsize times number of columns in `ar`
     ar_row_view = ar.view("|S%d" % (ar.itemsize * ar.shape[1]))
-    _, unique_row_indices = np.unique(ar_row_view, return_index=True)
-    ar_out = ar[unique_row_indices]
-    return ar_out
+    if return_counts:
+        _, unique_row_indices, counts = np.unique(
+            ar_row_view, return_index=True, return_counts=True
+        )
 
+        return ar[unique_row_indices], counts
+    else:
+        _, unique_row_indices = np.unique(ar_row_view, return_index=True)
+
+        return ar[unique_row_indices]
+
+
+def _cluster_nearest_neighbor(ijk, labels_index, labeled):
+    """Find the nearest neighbor for given points in the corresponding cluster.
+
+    Parameters
+    ----------
+    ijk : :obj:`numpy.ndarray`
+        (n_pts, 3) array of query points.
+    labels_index : :obj:`numpy.ndarray`
+        (n_pts,) array of corresponding cluster indices.
+    labeled : :obj:`numpy.ndarray`
+        3D array with voxels labeled according to cluster index.
+
+    Returns
+    -------
+    nbrs : :obj:`numpy.ndarray`
+        (n_pts, 3) nearest neighbor points.
+
+    This function is partially derived from Nilearn's code.
+
+    License
+    -------
+    New BSD License
+
+    Copyright (c) 2007 - 2022 The nilearn developers.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
+
+    a. Redistributions of source code must retain the above copyright notice,
+        this list of conditions and the following disclaimer.
+    b. Redistributions in binary form must reproduce the above copyright
+        notice, this list of conditions and the following disclaimer in the
+        documentation and/or other materials provided with the distribution.
+    c. Neither the name of the nilearn developers nor the names of
+        its contributors may be used to endorse or promote products
+        derived from this software without specific prior written
+        permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+    AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+    ARE DISCLAIMED. IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE FOR
+    ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+    DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+    SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+    OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+    DAMAGE.
+    """
+    labels = labeled[labeled > 0]
+    clusters_ijk = np.array(labeled.nonzero()).T
+    nbrs = np.zeros_like(ijk)
+    for ii, (lab, point) in enumerate(zip(labels_index, ijk)):
+        lab_ijk = clusters_ijk[labels == lab]
+        dist = np.linalg.norm(lab_ijk - point, axis=1)
+        nbrs[ii] = lab_ijk[np.argmin(dist)]
+
+    return nbrs
+
+
+def _get_cluster_coms(labeled_cluster_arr):
+    """Get the center of mass of each cluster in a labeled array.
+
+    This function is partially derived from Nilearn's code.
+
+    License
+    -------
+    New BSD License
+
+    Copyright (c) 2007 - 2022 The nilearn developers.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
+
+    a. Redistributions of source code must retain the above copyright notice,
+        this list of conditions and the following disclaimer.
+    b. Redistributions in binary form must reproduce the above copyright
+        notice, this list of conditions and the following disclaimer in the
+        documentation and/or other materials provided with the distribution.
+    c. Neither the name of the nilearn developers nor the names of
+        its contributors may be used to endorse or promote products
+        derived from this software without specific prior written
+        permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+    AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+    ARE DISCLAIMED. IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE FOR
+    ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+    DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+    SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+    OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+    DAMAGE.
+    """
+    cluster_ids = np.unique(labeled_cluster_arr)[1:]
+    n_clusters = cluster_ids.size
+
+    # Identify center of mass for each cluster
+    # This COM may fall outside the cluster, but it is a useful heuristic for identifying them
+    cluster_ids = np.arange(1, n_clusters + 1, dtype=int)
+    cluster_coms = ndimage.center_of_mass(labeled_cluster_arr, labeled_cluster_arr, cluster_ids)
+    cluster_coms = np.array(cluster_coms).astype(int)
+
+    # NOTE: The following comes from Nilearn
+    # Determine if all subpeaks are within the cluster
+    # They may not be if the cluster is binary and has a shape where the COM is
+    # outside the cluster, like a donut.
+    coms_outside_clusters = (
+        labeled_cluster_arr[cluster_coms[:, 0], cluster_coms[:, 1], cluster_coms[:, 2]]
+        != cluster_ids
+    )
+    if np.any(coms_outside_clusters):
+        LGR.warning(
+            "Attention: At least one of the centers of mass falls outside of the cluster body. "
+            "Identifying the nearest in-cluster voxel."
+        )
+
+        # Replace centers of mass with their nearest neighbor points in the
+        # corresponding clusters. Note this is also equivalent to computing the
+        # centers of mass constrained to points within the cluster.
+        cluster_coms[coms_outside_clusters, :] = _cluster_nearest_neighbor(
+            cluster_coms[coms_outside_clusters, :],
+            cluster_ids[coms_outside_clusters],
+            labeled_cluster_arr,
+        )
+
+    return cluster_coms
 
 def coef_spline_bases(axis_coords, spacing, margin):
     """
@@ -1104,14 +1230,13 @@ def B_spline_bases(masker_voxels, spacing, margin=10):
     y_spline_sparse = sparse.COO(y_spline_coords, y_spline[y_spline_coords])
     z_spline_sparse = sparse.COO(z_spline_coords, z_spline[z_spline_coords])
 
-
     # create spatial design matrix by tensor product of spline bases in 3 dimesion
     X = np.kron(np.kron(x_spline_sparse, y_spline_sparse), z_spline_sparse)  # Row sums of X are all 1=> There is no need to re-normalise X
     # remove the voxels outside brain mask
     axis_dim = [xx.shape[0], yy.shape[0], zz.shape[0]]
     brain_voxels_index = [(z - np.min(zz))+ axis_dim[2] * (y - np.min(yy))+ axis_dim[1] * axis_dim[2] * (x - np.min(xx))
                         for x in xx for y in yy for z in zz if masker_voxels[x, y, z] == 1]
-    X = X[brain_voxels_index, :]
+    X = X[brain_voxels_index, :].todense()
     # remove tensor product basis that have no support in the brain
     x_df, y_df, z_df = x_spline.shape[1], y_spline.shape[1], z_spline.shape[1]
     support_basis = []
@@ -1127,28 +1252,17 @@ def B_spline_bases(masker_voxels, spacing, margin=10):
 
     return X
 
-def vox2idx(ijk, masker_voxels):
-    """
-    Convert coordinates in voxel space to integer index (between 0 and n-voxel)
+def standardize_field(dataset, metadata):
+    # if isinstance(metadata, str):
+    #     moderators = dataset.annotations[metadata]
+    # elif isinstance(metadata, list):
+    moderators = dataset.annotations[metadata]
+    standardize_moderators = moderators - np.mean(moderators, axis=0)
+    standardize_moderators /= np.std(standardize_moderators, axis=0)
+    if isinstance(metadata, str):
+        column_name = 'standardized_' + metadata
+    elif isinstance(metadata, list):
+        column_name = ['standardized_' + moderator for moderator in metadata]
+    dataset.annotations[column_name] = standardize_moderators
 
-    Parameters
-    ----------
-    ijk: (x,y,z) coordinates in voxel space
-    masker_voxels : matrix with element either 0 or 1, indicating if it's within brain mask,
-    spacing: (equally spaced) knots spacing in x/y/z direction
-    Returns
-    -------
-    foci_index : 1-D ndarray (n_voxel, )
-    """
-    dim_mask = masker_voxels.shape
-    n_brain_voxel = np.sum(masker_voxels).astype(int)
-    n_foci = ijk.shape[0]
-
-    xx = np.where(np.apply_over_axes(np.sum, masker_voxels, [1, 2]) > 0)[0]
-    yy = np.where(np.apply_over_axes(np.sum, masker_voxels, [0, 2]) > 0)[1]
-    zz = np.where(np.apply_over_axes(np.sum, masker_voxels, [0, 1]) > 0)[2]
-    x_dim, y_dim, z_dim = xx.shape[0], yy.shape[0], zz.shape[0]
-    foci_index = [ijk[i, 2] - np.min(zz)+ z_dim * (ijk[i, 1] - np.min(yy))+ y_dim * z_dim * (ijk[i, 0] - np.min(xx)) for i in range(n_foci)]
-    foci_index = np.array(foci_index)
-
-    return foci_index
+    return dataset
