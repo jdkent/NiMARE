@@ -129,7 +129,7 @@ def testdata_cbmr_simulated():
     """Simulate coordinate-based dataset for tests.
     """
     # simulate 
-    ground_truth_foci, dset = create_coordinate_dataset(foci=10, sample_size=(20, 40), n_studies=1000)
+    ground_truth_foci, dset = create_coordinate_dataset(foci=10, sample_size=(20, 40), n_studies=100)
     # set up group columns: diagnosis & drug_status  
     n_rows = dset.annotations.shape[0]
     dset.annotations['diagnosis'] = ["schizophrenia" if i%2==0 else 'depression' for i in range(n_rows)]

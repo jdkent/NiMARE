@@ -15,9 +15,10 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 from nilearn.input_data import NiftiMasker
+from nilearn.image import crop_img
 
-from nimare import references
-from nimare.due import due
+# from nimare import references
+# from nimare.due import due
 from scipy import ndimage
 
 import patsy
@@ -1196,7 +1197,7 @@ def coef_spline_bases(axis_coords, spacing, margin):
     return coef_spline
 
 
-def B_spline_bases(masker_voxels, spacing, margin=10):
+def B_spline_bases(masker, spacing, margin=10):
     """ Cubic B-spline bases for spatial intensity
 
     The whole coefficient matrix is constructed by taking tensor product of
@@ -1213,8 +1214,12 @@ def B_spline_bases(masker_voxels, spacing, margin=10):
     X : 2-D ndarray (n_voxel x n_spline_bases)
         only keeps with within-brain voxels
     """
+    cropped_img, padding = crop_img(masker.mask_img, pad=False, return_offset=True)
+
     dim_mask = masker_voxels.shape
     n_brain_voxel = np.sum(masker_voxels)
+    
+
     # remove the blank space around the brain mask
     xx = np.where(np.apply_over_axes(np.sum, masker_voxels, [1, 2]) > 0)[0]
     yy = np.where(np.apply_over_axes(np.sum, masker_voxels, [0, 2]) > 0)[1]
@@ -1234,7 +1239,7 @@ def B_spline_bases(masker_voxels, spacing, margin=10):
     X = np.kron(np.kron(x_spline_sparse, y_spline_sparse), z_spline_sparse)  # Row sums of X are all 1=> There is no need to re-normalise X
     # remove the voxels outside brain mask
     axis_dim = [xx.shape[0], yy.shape[0], zz.shape[0]]
-    brain_voxels_index = [(z - np.min(zz))+ axis_dim[2] * (y - np.min(yy))+ axis_dim[1] * axis_dim[2] * (x - np.min(xx))
+    brain_voxels_index = [(z - np.min(zz)) + axis_dim[2] * (y - np.min(yy))+ axis_dim[1] * axis_dim[2] * (x - np.min(xx))
                         for x in xx for y in yy for z in zz if masker_voxels[x, y, z] == 1]
     X = X[brain_voxels_index, :].todense()
     # remove tensor product basis that have no support in the brain

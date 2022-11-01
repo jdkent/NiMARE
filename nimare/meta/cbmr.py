@@ -203,12 +203,13 @@ class CBMREstimator(Estimator):
             if torch.abs(loss_diff) < tol:
                 break
             prev_loss = loss
-        
+
         return
 
     def _fit(self, dataset):
+        masker = self.masker or dataset.masker
         masker_voxels = self.inputs_['mask_img']._dataobj
-        Coef_spline_bases = B_spline_bases(masker_voxels=masker_voxels, spacing=self.spline_spacing)
+        Coef_spline_bases = B_spline_bases(masker=masker, spacing=self.spline_spacing)
         P = Coef_spline_bases.shape[1]
         self.inputs_['Coef_spline_bases'] = Coef_spline_bases
         

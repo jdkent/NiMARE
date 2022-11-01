@@ -21,9 +21,3 @@ def test_CBMRInference(testdata_cbmr_simulated):
     
     # [[[1,0,0,0],[0,0,1,0]], [1, 0, 0, 0]]
     # [[[1,0],[0,1]], [1, -1]]
-
-
-
-
-
-   
