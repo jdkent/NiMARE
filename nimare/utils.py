@@ -1166,6 +1166,7 @@ def _get_cluster_coms(labeled_cluster_arr):
 
     return cluster_coms
 
+
 def coef_spline_bases(axis_coords, spacing, margin):
     """
     Coefficient of cubic B-spline bases in any x/y/z direction
@@ -1173,9 +1174,9 @@ def coef_spline_bases(axis_coords, spacing, margin):
     Parameters
     ----------
     axis_coords : value range in x/y/z direction
-    spacing: (equally spaced) knots spacing in x/y/z direction, 
+    spacing: (equally spaced) knots spacing in x/y/z direction,
     margin: extend the region where B-splines are constructed (min-margin, max_margin)
-            to avoid weakly-supported B-spline on the edge 
+            to avoid weakly-supported B-spline on the edge
     Returns
     -------
     coef_spline : 2-D ndarray (n_points x n_spline_bases)
@@ -1198,32 +1199,32 @@ def coef_spline_bases(axis_coords, spacing, margin):
 
 
 def B_spline_bases(masker, spacing, margin=10):
-    """ Cubic B-spline bases for spatial intensity
+    """Cubic B-spline bases for spatial intensity
 
     The whole coefficient matrix is constructed by taking tensor product of
-    all B-spline bases coefficient matrix in three direction. 
+    all B-spline bases coefficient matrix in three direction.
 
     Parameters
     ----------
     masker_voxels : matrix with element either 0 or 1, indicating if it's within brain mask,
-    spacing: (equally spaced) knots spacing in x/y/z direction, 
+    spacing: (equally spaced) knots spacing in x/y/z direction,
     margin: extend the region where B-splines are constructed (min-margin, max_margin)
-            to avoid weakly-supported B-spline on the edge 
+            to avoid weakly-supported B-spline on the edge
     Returns
     -------
     X : 2-D ndarray (n_voxel x n_spline_bases)
         only keeps with within-brain voxels
     """
     cropped_img, padding = crop_img(masker.mask_img, pad=False, return_offset=True)
-
-    dim_mask = masker_voxels.shape
-    n_brain_voxel = np.sum(masker_voxels)
-    
+    vectorized_cropped_img_indices = np.where(
+        cropped_img.dataobj.reshape(np.prod(cropped_img.shape))
+    )[0]
 
     # remove the blank space around the brain mask
-    xx = np.where(np.apply_over_axes(np.sum, masker_voxels, [1, 2]) > 0)[0]
-    yy = np.where(np.apply_over_axes(np.sum, masker_voxels, [0, 2]) > 0)[1]
-    zz = np.where(np.apply_over_axes(np.sum, masker_voxels, [0, 1]) > 0)[2]
+    xx, yy, zz = map(lambda x: np.array(range(x.start, x.stop)), padding)
+    # xx = np.where(np.apply_over_axes(np.sum, masker_voxels, [1, 2]) > 0)[0]
+    # yy = np.where(np.apply_over_axes(np.sum, masker_voxels, [0, 2]) > 0)[1]
+    # zz = np.where(np.apply_over_axes(np.sum, masker_voxels, [0, 1]) > 0)[2]
 
     x_spline = coef_spline_bases(xx, spacing, margin)
     y_spline = coef_spline_bases(yy, spacing, margin)
@@ -1235,51 +1236,47 @@ def B_spline_bases(masker, spacing, margin=10):
     y_spline_sparse = sparse.COO(y_spline_coords, y_spline[y_spline_coords])
     z_spline_sparse = sparse.COO(z_spline_coords, z_spline[z_spline_coords])
 
-    # create spatial design matrix by tensor product of spline bases in 3 dimesion
-    X = np.kron(np.kron(x_spline_sparse, y_spline_sparse), z_spline_sparse)  # Row sums of X are all 1=> There is no need to re-normalise X
+    # create spatial design matrix by tensor product of spline bases in 3 dimensions
+    X = np.kron(
+        np.kron(x_spline_sparse, y_spline_sparse), z_spline_sparse
+    )  # Row sums of X are all 1=> There is no need to re-normalise X
     # remove the voxels outside brain mask
-    axis_dim = [xx.shape[0], yy.shape[0], zz.shape[0]]
-    brain_voxels_index = [(z - np.min(zz)) + axis_dim[2] * (y - np.min(yy))+ axis_dim[1] * axis_dim[2] * (x - np.min(xx))
-                        for x in xx for y in yy for z in zz if masker_voxels[x, y, z] == 1]
-    X = X[brain_voxels_index, :].todense()
+    X = X[vectorized_cropped_img_indices, :].todense()
     # remove tensor product basis that have no support in the brain
-    x_df, y_df, z_df = x_spline.shape[1], y_spline.shape[1], z_spline.shape[1]
-    support_basis = []
     # find and remove weakly supported B-spline bases
-    for bx in range(x_df):
-        for by in range(y_df):
-            for bz in range(z_df):
-                basis_index = bz + z_df*by + z_df*y_df*bx
-                basis_coef = X[:, basis_index]
-                if np.max(basis_coef) >= 0.1: 
-                    support_basis.append(basis_index)
+    support_basis = np.where(np.amax(X, axis=0) >= 0.1)[0]
+    # for bx in range(x_df):
+    #     for by in range(y_df):
+    #         for bz in range(z_df):
+    #             basis_index = bz + z_df*by + z_df*y_df*bx
+    #             basis_coef = X[:, basis_index]
+    #             if np.max(basis_coef) >= 0.1:
+    #                 support_basis.append(basis_index)
     X = X[:, support_basis]
 
     return X
+
 
 def standardize_field(dataset, metadata):
     moderators = dataset.annotations[metadata]
     standardize_moderators = moderators - np.mean(moderators, axis=0)
     standardize_moderators /= np.std(standardize_moderators, axis=0)
     if isinstance(metadata, str):
-        column_name = 'standardized_' + metadata
+        column_name = "standardized_" + metadata
     elif isinstance(metadata, list):
-        column_name = ['standardized_' + moderator for moderator in metadata]
+        column_name = ["standardized_" + moderator for moderator in metadata]
     dataset.annotations[column_name] = standardize_moderators
 
     return dataset
 
+    # def index2vox(vals, masker_voxels):
+    #     print('23')
+    #     xx = np.where(np.apply_over_axes(np.sum, masker_voxels, [1, 2]) > 0)[0]
+    #     yy = np.where(np.apply_over_axes(np.sum, masker_voxels, [0, 2]) > 0)[1]
+    #     zz = np.where(np.apply_over_axes(np.sum, masker_voxels, [0, 1]) > 0)[2]
+    #     image_dim = [xx.shape[0], yy.shape[0], zz.shape[0]]
+    #     spline_voxel_index = np.arange(np.prod(image_dim))
+    #     for i in spline_voxel_index:
+    #         print('13')
 
-# def index2vox(vals, masker_voxels):
-#     print('23')
-#     xx = np.where(np.apply_over_axes(np.sum, masker_voxels, [1, 2]) > 0)[0]
-#     yy = np.where(np.apply_over_axes(np.sum, masker_voxels, [0, 2]) > 0)[1]
-#     zz = np.where(np.apply_over_axes(np.sum, masker_voxels, [0, 1]) > 0)[2]
-#     image_dim = [xx.shape[0], yy.shape[0], zz.shape[0]]
-#     spline_voxel_index = np.arange(np.prod(image_dim))
-#     for i in spline_voxel_index:
-#         print('13')
-
-
-
-    return 
+    return
