@@ -18,9 +18,9 @@ def test_CBMRInference(testdata_cbmr_simulated):
         group_names=["diagnosis", "drug_status"],
         moderators=["standardized_sample_sizes", "standardized_avg_age"],
         spline_spacing=10,
-        model="NB",
+        model="Poisson",
         penalty=False,
-        lr=1e-6,
+        lr=1e-1,
         tol=1e6,
         device="cuda",
     )
