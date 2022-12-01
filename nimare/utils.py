@@ -1217,7 +1217,7 @@ def B_spline_bases(masker, spacing, margin=10):
     """
     cropped_img, padding = crop_img(masker.mask_img, pad=False, return_offset=True)
     vectorized_cropped_img_indices = np.where(
-        cropped_img.dataobj.reshape(np.prod(cropped_img.shape)) # use flatten
+        cropped_img.dataobj.reshape(np.prod(cropped_img.shape))  # use flatten
     )[0]
 
     # remove the blank space around the brain mask
@@ -1280,9 +1280,9 @@ def index2vox(vals, masker_voxels):
     for i in range(image_dim[0]):
         for j in range(image_dim[1]):
             for k in range(image_dim[2]):
-                x,y,z = xx[i], yy[j], zz[k]
-                if masker_voxels[x,y,z] == 1:
-                    voxel_array[x,y,z] = vals[index_count]
+                x, y, z = xx[i], yy[j], zz[k]
+                if masker_voxels[x, y, z] == 1:
+                    voxel_array[x, y, z] = vals[index_count]
                     index_count += 1
 
     return voxel_array
