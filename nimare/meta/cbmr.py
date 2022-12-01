@@ -1,22 +1,23 @@
-from importlib.util import set_loader
-import string
-from attr import has
-from numpy import spacing
+# from importlib.util import set_loader
+# import string
+# from attr import has
+# from numpy import spacing
 from nimare.base import Estimator
-from nimare.utils import get_template, get_masker, B_spline_bases
+from nimare.utils import get_masker, B_spline_bases
 import nibabel as nib
 import numpy as np
 import pandas as pd
 import scipy
 from nimare.utils import mm2vox
 from nimare.diagnostics import FocusFilter
-from nimare.transforms import z_to_p
-from nimare import transforms
+
+# from nimare.transforms import z_to_p
+# from nimare import transforms
 import torch
 import functorch
 import logging
 import copy
-
+from functools import partial
 from nimare.meta.models import GLMPoisson, GLMNB, GLMCNB
 
 LGR = logging.getLogger(__name__)
@@ -60,7 +61,7 @@ class CBMREstimator(Estimator):
         self.tol = tol
         self.device = device
         if self.device == "cuda" and not torch.cuda.is_available():
-            LGR.debug(f"cuda not found, use device 'cpu'")
+            LGR.debug("cuda not found, use device 'cpu'")
             self.device = "cpu"
 
         # Initialize optimisation parameters
@@ -207,15 +208,11 @@ class CBMREstimator(Estimator):
         gamma=0.999,
     ):
         self.iter += 1
-<<<<<<< HEAD
         scheduler = torch.optim.lr_scheduler.ExponentialLR(
             optimizer, gamma=gamma
         )  # learning rate decay
-        scheduler.step()
+        # scheduler.step()
 
-=======
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,gamma=gamma) # learning rate decay
->>>>>>> f4cd61ebbdfcadb93b93d1cf15021f68a77cfb7a
         def closure():
             optimizer.zero_grad()
             loss = model(Coef_spline_bases, all_moderators, all_foci_per_voxel, all_foci_per_study)
@@ -255,7 +252,7 @@ class CBMREstimator(Estimator):
             elif self.model == "clustered_NB":
                 model.all_alpha = torch.nn.ParameterDict(all_alpha)
 
-            LGR.debug(f"Reset L-BFGS optimizer......")
+            LGR.debug("Reset L-BFGS optimizer......")
         else:
             self.last_state = copy.deepcopy(
                 model.state_dict()
@@ -317,7 +314,9 @@ class CBMREstimator(Estimator):
         self.inputs_["Coef_spline_bases"] = Coef_spline_bases
 
         cbmr_model = self._model_structure(self.model, self.penalty, self.device)
-        optimization = self._optimizer(cbmr_model, self.lr, self.tol, self.n_iter, self.device)
+        # optimization is never used as a variable, what does this function do?
+        # optimization =
+        self._optimizer(cbmr_model, self.lr, self.tol, self.n_iter, self.device)
 
         maps, tables = dict(), dict()
         Spatial_Regression_Coef, overdispersion_param = dict(), dict()
@@ -395,7 +394,7 @@ class CBMREstimator(Estimator):
                     dtype=torch.float64,
                     device=self.device,
                 )
-            # a = -GLMCNB._log_likelihood_single_group(alpha, group_beta_linear_weight, gamma, Coef_spline_bases, group_moderators, group_foci_per_voxel, group_foci_per_study, self.device)
+            # can we use a partial function/reduce repetition here?
             if self.model == "Poisson":
                 nll = lambda beta: -GLMPoisson._log_likelihood_single_group(
                     beta,
@@ -516,8 +515,9 @@ class CBMRInference(object):
                     [con_group.shape[1] != self.n_groups for con_group in self.t_con_group]
                 )[0].tolist()
                 raise ValueError(
-                    "The shape of {}th contrast vector(s) in group-wise intensity contrast matrix doesn't match with groups".format(
-                        str(wrong_con_group_idx)
+                    (
+                        f"The shape of {wrong_con_group_idx}th contrast vector(s) in group-wise"
+                        " intensity contrast matrix doesn't match with groups"
                     )
                 )
             con_group_zero_row = [
@@ -533,8 +533,12 @@ class CBMRInference(object):
                 ]
                 if np.any([con_group.shape[0] == 0 for con_group in self.t_con_group]):
                     raise ValueError(
-                        "One or more of contrast vectors(s) in group-wise intensity contrast matrix are all zeros"
+                        (
+                            "One or more of contrast vectors(s) in group-wise"
+                            " intensity contrast matrix are all zeros"
+                        )
                     )
+            # n_contrast_group is not used, is this a mistake from my merge?
             n_contrasts_group = [con_group.shape[0] for con_group in self.t_con_group]
             self._Name_of_con_group()
             # standardization
@@ -572,8 +576,9 @@ class CBMRInference(object):
                         ]
                     )[0].tolist()
                     raise ValueError(
-                        "The shape of {}th contrast vector(s) in moderators contrast matrix doesn't match with moderators".format(
-                            str(wrong_con_moderator_idx)
+                        (
+                            f"The shape of {wrong_con_moderator_idx}th contrast vector(s) in"
+                            " moderators contrast matrix doesn't match with moderators"
                         )
                     )
                 con_moderator_zero_row = [
@@ -591,7 +596,10 @@ class CBMRInference(object):
                         [con_moderator.shape[0] == 0 for con_moderator in self.t_con_moderator]
                     ):
                         raise ValueError(
-                            "One or more of contrast vectors(s) in modereators contrast matrix are all zeros"
+                            (
+                                "One or more of contrast vectors(s) in modereators"
+                                " contrast matrix are all zeros"
+                            )
                         )
                 n_contrasts_moderator = [
                     con_moderator.shape[0] for con_moderator in self.t_con_moderator
@@ -604,7 +612,7 @@ class CBMRInference(object):
             else:
                 self.t_con_moderator = False
         if self.device == "cuda" and not torch.cuda.is_available():
-            LGR.debug(f"cuda not found, use device 'cpu'")
+            LGR.debug("cuda not found, use device 'cpu'")
             self.device = "cpu"
 
     def _Name_of_con_group(self):
@@ -871,6 +879,7 @@ class CBMRInference(object):
         return h.detach().cpu().numpy()
 
     def _contrast(self):
+        # This variable is not used
         Log_Spatial_Intensity_SE = self.CBMRResults.tables["Log_Spatial_Intensity_SE"]
         if self.t_con_group is not False:
             con_group_count = 0
@@ -931,7 +940,7 @@ class CBMRInference(object):
                 spatial_coef_dim = (
                     self.CBMRResults.tables["Spatial_Regression_Coef"].to_numpy().shape[1]
                 )
-                Cov_log_intensity = np.empty(shape=(0,n_brain_voxel))
+                Cov_log_intensity = np.empty(shape=(0, n_brain_voxel))
                 for k in range(n_con_group_involved):
                     for s in range(n_con_group_involved):
                         Cov_beta_ks = Cov_spatial_coef[
@@ -945,21 +954,14 @@ class CBMRInference(object):
                             ].reshape((1, spatial_coef_dim))
                             Cov_group_log_intensity_j = x_j @ Cov_beta_ks @ x_j.T
                             Cov_group_log_intensity = np.concatenate(
-                                (
-                                    Cov_group_log_intensity,
-                                    Cov_group_log_intensity_j
-                                ),
+                                (Cov_group_log_intensity, Cov_group_log_intensity_j),
                                 axis=1,
                             )
                         Cov_log_intensity = np.concatenate(
-                            (
-                                Cov_log_intensity,
-                                Cov_group_log_intensity
-                            ),
-                            axis=0
-                        ) # (m^2, n_voxels)
+                            (Cov_log_intensity, Cov_group_log_intensity), axis=0
+                        )  # (m^2, n_voxels)
                 # GLH on log_intensity (eta)
-                chi_sq_spatial = np.empty(shape=(0, ))
+                chi_sq_spatial = np.empty(shape=(0,))
                 for j in range(n_brain_voxel):
                     Contrast_log_intensity_j = Contrast_log_intensity[:, j].reshape(m, 1)
                     V_j = Cov_log_intensity[:, j].reshape(
@@ -970,7 +972,15 @@ class CBMRInference(object):
                     chi_sq_spatial_j = (
                         Contrast_log_intensity_j.T @ CV_jC_inv @ Contrast_log_intensity_j
                     )
-                    chi_sq_spatial = np.concatenate((chi_sq_spatial, chi_sq_spatial_j.reshape(1,)), axis=0)
+                    chi_sq_spatial = np.concatenate(
+                        (
+                            chi_sq_spatial,
+                            chi_sq_spatial_j.reshape(
+                                1,
+                            ),
+                        ),
+                        axis=0,
+                    )
                 p_vals_spatial = 1 - scipy.stats.chi2.cdf(chi_sq_spatial, df=m)
 
                 con_group_name = self.t_con_group_name[con_group_count]
@@ -1578,7 +1588,7 @@ class GLMCNB(torch.nn.Module):
             )
             log_l += group_log_l
 
-        if self.penalty == True:
+        if self.penalty:
             # Firth-type penalty
             for group in all_foci_per_voxel.keys():
                 alpha = self.all_alpha[group]
