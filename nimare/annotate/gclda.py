@@ -8,19 +8,16 @@ import pandas as pd
 from nilearn._utils import load_niimg
 from scipy.stats import multivariate_normal
 
-from .. import references
-from ..base import NiMAREBase
-from ..due import due
-from ..utils import get_template
+from nimare.base import NiMAREBase
+from nimare.utils import get_template
 
 LGR = logging.getLogger(__name__)
 
 
-@due.dcite(references.GCLDAMODEL)
 class GCLDAModel(NiMAREBase):
     """Generate a generalized correspondence latent Dirichlet allocation (GCLDA) topic model.
 
-    This model was originally described in Rubin et al. (2017) [1]_.
+    This model was originally described in :footcite:t:`rubin2017decoding`.
 
     .. versionchanged:: 0.0.8
 
@@ -80,10 +77,7 @@ class GCLDAModel(NiMAREBase):
 
     References
     ----------
-    .. [1] Rubin, Timothy N., et al. "Decoding brain activity using a large-scale probabilistic
-       functional-anatomical atlas of human cognition."
-       PLoS computational biology 13.10 (2017): e1005649.
-       https://doi.org/10.1371/journal.pcbi.1005649
+    .. footbibliography::
 
     See Also
     --------
@@ -720,16 +714,12 @@ class GCLDAModel(NiMAREBase):
                     self.topics["regions_mu"][i_topic, j_region, ...] = mu
                     self.topics["regions_sigma"][i_topic, j_region, ...] = sigma
 
-    @due.dcite(
-        references.LOG_LIKELIHOOD,
-        description="Describes method for computing log-likelihood used in model.",
-    )
     def compute_log_likelihood(self, model=None, update_vectors=True):
         """Compute log-likelihood of a model object given current model.
 
         Computes the log-likelihood of data in any model object (either train or test) given the
         posterior predictive distributions over peaks and word-types for the model,
-        using the method described in Newman et al. (2009) [2]_.
+        using the method described in :footcite:t:`newman2009distributed`.
         Note that this is not computing the joint log-likelihood of model parameters and data.
 
         Parameters
@@ -753,9 +743,7 @@ class GCLDAModel(NiMAREBase):
 
         References
         ----------
-        .. [2] Newman, D., Asuncion, A., Smyth, P., & Welling, M. (2009).
-            Distributed algorithms for topic models. Journal of Machine
-            Learning Research, 10(Aug), 1801-1828.
+        .. footbibliography::
         """
         if model is None:
             model = self

@@ -4,27 +4,25 @@ import logging
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 from nilearn._utils import load_niimg
 from nilearn.masking import apply_mask
 from tqdm.auto import tqdm
 
-from .. import references
-from ..base import Decoder
-from ..due import due
-from ..meta.cbma.base import CBMAEstimator
-from ..meta.cbma.mkda import MKDAChi2
-from ..stats import pearson
-from ..utils import _check_type, _safe_transform
-from .utils import weight_priors
+from nimare.decode.base import Decoder
+from nimare.decode.utils import weight_priors
+from nimare.meta.cbma.base import CBMAEstimator
+from nimare.meta.cbma.mkda import MKDAChi2
+from nimare.stats import pearson
+from nimare.utils import _check_ncores, _check_type, _safe_transform, tqdm_joblib
 
 LGR = logging.getLogger(__name__)
 
 
-@due.dcite(references.GCLDA_DECODING, description="Describes decoding methods using GC-LDA.")
 def gclda_decode_map(model, image, topic_priors=None, prior_weight=1):
     r"""Perform image-to-text decoding for continuous inputs using method from Rubin et al. (2017).
 
-    The method used in this function was originally described in Rubin et al. (2017) [1]_.
+    The method used in this function was originally described in :footcite:t:`rubin2017decoding`.
 
     Parameters
     ----------
@@ -88,10 +86,7 @@ def gclda_decode_map(model, image, topic_priors=None, prior_weight=1):
 
     References
     ----------
-    .. [1] Rubin, Timothy N., et al. "Decoding brain activity using a large-scale probabilistic
-       functional-anatomical atlas of human cognition."
-       PLoS computational biology 13.10 (2017): e1005649.
-       https://doi.org/10.1371/journal.pcbi.1005649
+    .. footbibliography::
     """
     image = load_niimg(image)
 
@@ -113,13 +108,16 @@ def gclda_decode_map(model, image, topic_priors=None, prior_weight=1):
     return decoded_df, topic_weights
 
 
-@due.dcite(references.NEUROSYNTH, description="Introduces Neurosynth.")
 class CorrelationDecoder(Decoder):
     """Decode an unthresholded image by correlating the image with meta-analytic maps.
 
-    .. versionchanged:: 0.0.8
+    .. versionchanged:: 0.0.13
 
-        * [ENH] Add *low-memory* option to :class:`meta_estimator`
+        * New parameter: `n_cores`. Number of cores to use for parallelization.
+
+    .. versionchanged:: 0.0.12
+
+        * Remove low-memory option in favor of sparse arrays.
 
     Parameters
     ----------
@@ -133,6 +131,10 @@ class CorrelationDecoder(Decoder):
         Meta-analysis estimator. Default is :class:`~nimare.meta.mkda.MKDAChi2`.
     target_image : :obj:`str`
         Name of meta-analysis results image to use for decoding.
+    n_cores : :obj:`int`, optional
+        Number of cores to use for parallelization.
+        If <=0, defaults to using all available cores.
+        Default is 1.
 
     Warnings
     --------
@@ -153,11 +155,11 @@ class CorrelationDecoder(Decoder):
         frequency_threshold=0.001,
         meta_estimator=None,
         target_image="z_desc-specificity",
-        memory_limit="1gb",
+        n_cores=1,
     ):
 
         if meta_estimator is None:
-            meta_estimator = MKDAChi2(memory_limit=memory_limit, kernel__memory_limit=memory_limit)
+            meta_estimator = MKDAChi2()
         else:
             meta_estimator = _check_type(meta_estimator, CBMAEstimator)
 
@@ -166,7 +168,7 @@ class CorrelationDecoder(Decoder):
         self.frequency_threshold = frequency_threshold
         self.meta_estimator = meta_estimator
         self.target_image = target_image
-        self.results = None
+        self.n_cores = _check_ncores(n_cores)
 
     def _fit(self, dataset):
         """Generate feature-specific meta-analytic maps for dataset.
@@ -188,36 +190,43 @@ class CorrelationDecoder(Decoder):
         self.masker = dataset.masker
 
         n_features = len(self.features_)
-        for i_feature, feature in enumerate(tqdm(self.features_, total=n_features)):
-            feature_ids = dataset.get_studies_by_label(
-                labels=[feature],
-                label_threshold=self.frequency_threshold,
+        with tqdm_joblib(tqdm(total=n_features)):
+            images_, feature_idx = zip(
+                *Parallel(n_jobs=self.n_cores)(
+                    delayed(self._run_fit)(i_feature, feature, dataset)
+                    for i_feature, feature in enumerate(self.features_)
+                )
             )
-            # Limit selected studies to studies with valid data
-            feature_ids = sorted(list(set(feature_ids).intersection(self.inputs_["id"])))
-
-            # Create the reduced Dataset
-            feature_dset = dataset.slice(feature_ids)
-
-            # Check if the meta method is a pairwise estimator
-            # This seems like a somewhat inelegant solution
-            if "dataset2" in inspect.getfullargspec(self.meta_estimator.fit).args:
-                nonfeature_ids = sorted(list(set(self.inputs_["id"]) - set(feature_ids)))
-                nonfeature_dset = dataset.slice(nonfeature_ids)
-                self.meta_estimator.fit(feature_dset, nonfeature_dset)
-            else:
-                self.meta_estimator.fit(feature_dset)
-
-            feature_data = self.meta_estimator.results.get_map(
-                self.target_image,
-                return_type="array",
-            )
-            if i_feature == 0:
-                images_ = np.zeros((len(self.features_), len(feature_data)), feature_data.dtype)
-
-            images_[i_feature, :] = feature_data
-
+        # Convert to an array and sort the images_ array based on the feature index.
+        images_ = np.array(images_)[np.array(feature_idx)]
         self.images_ = images_
+
+    def _run_fit(self, i_feature, feature, dataset):
+        feature_ids = dataset.get_studies_by_label(
+            labels=[feature],
+            label_threshold=self.frequency_threshold,
+        )
+        # Limit selected studies to studies with valid data
+        feature_ids = sorted(list(set(feature_ids).intersection(self.inputs_["id"])))
+
+        # Create the reduced Dataset
+        feature_dset = dataset.slice(feature_ids)
+
+        # Check if the meta method is a pairwise estimator
+        # This seems like a somewhat inelegant solution
+        if "dataset2" in inspect.getfullargspec(self.meta_estimator.fit).args:
+            nonfeature_ids = sorted(list(set(self.inputs_["id"]) - set(feature_ids)))
+            nonfeature_dset = dataset.slice(nonfeature_ids)
+            meta_results = self.meta_estimator.fit(feature_dset, nonfeature_dset)
+        else:
+            meta_results = self.meta_estimator.fit(feature_dset)
+
+        feature_data = meta_results.get_map(
+            self.target_image,
+            return_type="array",
+        )
+
+        return feature_data, i_feature
 
     def transform(self, img):
         """Correlate target image with each feature-specific meta-analytic map.
@@ -236,12 +245,15 @@ class CorrelationDecoder(Decoder):
         corrs = pearson(img_vec, self.images_)
         out_df = pd.DataFrame(index=self.features_, columns=["r"], data=corrs)
         out_df.index.name = "feature"
-        self.results = out_df
         return out_df
 
 
 class CorrelationDistributionDecoder(Decoder):
     """Decode an unthresholded image by correlating the image with study-wise images.
+
+    .. versionchanged:: 0.0.13
+
+        * New parameter: `n_cores`. Number of cores to use for parallelization.
 
     Parameters
     ----------
@@ -253,6 +265,10 @@ class CorrelationDistributionDecoder(Decoder):
         Frequency threshold. Default is 0.001.
     target_image : {'z', 'con'}, optional
         Name of meta-analysis results image to use for decoding. Default is 'z'.
+    n_cores : :obj:`int`, optional
+        Number of cores to use for parallelization.
+        If <=0, defaults to using all available cores.
+        Default is 1.
 
     Warnings
     --------
@@ -271,14 +287,13 @@ class CorrelationDistributionDecoder(Decoder):
         features=None,
         frequency_threshold=0.001,
         target_image="z",
-        memory_limit="1gb",
+        n_cores=1,
     ):
         self.feature_group = feature_group
         self.features = features
         self.frequency_threshold = frequency_threshold
-        self.memory_limit = memory_limit
-        self.results = None
         self._required_inputs["images"] = ("image", target_image)
+        self.n_cores = _check_ncores(n_cores)
 
     def _fit(self, dataset):
         """Collect sets of maps from the Dataset corresponding to each requested feature.
@@ -299,31 +314,38 @@ class CorrelationDistributionDecoder(Decoder):
         """
         self.masker = dataset.masker
 
-        images_ = {}
-        for feature in self.features_:
-            feature_ids = dataset.get_studies_by_label(
-                labels=[feature], label_threshold=self.frequency_threshold
-            )
-            selected_ids = sorted(list(set(feature_ids).intersection(self.inputs_["id"])))
-            selected_id_idx = [
-                i_id for i_id, id_ in enumerate(self.inputs_["id"]) if id_ in selected_ids
-            ]
-            test_imgs = [
-                img for i_img, img in enumerate(self.inputs_["images"]) if i_img in selected_id_idx
-            ]
-            if len(test_imgs):
-                feature_arr = _safe_transform(
-                    test_imgs,
-                    self.masker,
-                    memory_limit=self.memory_limit,
-                    memfile=None,
+        n_features = len(self.features_)
+        with tqdm_joblib(tqdm(total=n_features)):
+            images_ = dict(
+                Parallel(n_jobs=self.n_cores)(
+                    delayed(self._run_fit)(feature, dataset) for feature in self.features_
                 )
-                images_[feature] = feature_arr
-            else:
-                LGR.info(f"Skipping feature '{feature}'. No images found.")
+            )
+
         # reduce features again
         self.features_ = [f for f in self.features_ if f in images_.keys()]
         self.images_ = images_
+
+    def _run_fit(self, feature, dataset):
+        feature_ids = dataset.get_studies_by_label(
+            labels=[feature], label_threshold=self.frequency_threshold
+        )
+        selected_ids = sorted(list(set(feature_ids).intersection(self.inputs_["id"])))
+        selected_id_idx = [
+            i_id for i_id, id_ in enumerate(self.inputs_["id"]) if id_ in selected_ids
+        ]
+        test_imgs = [
+            img for i_img, img in enumerate(self.inputs_["images"]) if i_img in selected_id_idx
+        ]
+        if len(test_imgs):
+            feature_arr = _safe_transform(
+                test_imgs,
+                self.masker,
+                memfile=None,
+            )
+            return feature, feature_arr
+        else:
+            LGR.info(f"Skipping feature '{feature}'. No images found.")
 
     def transform(self, img):
         """Correlate target image with each map associated with each feature.
@@ -349,5 +371,5 @@ class CorrelationDistributionDecoder(Decoder):
             corrs_z = np.arctanh(corrs)
             out_df.loc[feature, "mean"] = np.mean(corrs_z)
             out_df.loc[feature, "std"] = np.std(corrs_z)
-        self.results = out_df
+
         return out_df
