@@ -177,7 +177,7 @@ class MetaResult(NiMAREBase):
         tables = {k: self.tables[k] for k in names}
 
         for tabletype, table in tables.items():
-            filename = prefix + tables + ".tsv"
+            filename = prefix + tabletype + ".tsv"
             outpath = os.path.join(output_dir, filename)
             table.to_csv(outpath, sep="\t", index=False)
 
