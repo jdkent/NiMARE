@@ -6,6 +6,7 @@ import json
 import logging
 import os.path as op
 import warnings
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -81,45 +82,53 @@ class Dataset(NiMAREBase):
 
         # Datasets are organized by study, then experiment
         # To generate unique IDs, we combine study ID with experiment ID
-        # build list of ids
+        # 1. build list of ids
         id_columns = ["id", "study_id", "contrast_id"]
-        all_ids = []
-        for pid in data.keys():
-            for expid in data[pid]["contrasts"].keys():
-                id_ = f"{pid}-{expid}"
-                all_ids.append([id_, pid, expid])
+        all_ids = [
+            [f"{pid}-{expid}", pid, expid]
+            for pid in data.keys()
+            for expid in data[pid]["contrasts"].keys()
+        ]
+        # Create IDs DataFrame and set initial IDs
         id_df = pd.DataFrame(columns=id_columns, data=all_ids)
         id_df = id_df.set_index("id", drop=False)
-        self._ids = id_df.index.values
+        # Set IDs directly to avoid recursion
+        self._id_array = np.sort(id_df.index.values)
 
-        # Set up Masker
+        # 2. Set up Masker
         if mask is None:
             mask = get_template(target, mask="brain")
-        self.masker = mask
+        self._masker = get_masker(mask)  # Store directly
         self.space = target
 
-        self.annotations = _dict_to_df(id_df, data, key="labels")
-        self.coordinates = _dict_to_coordinates(data, masker=self.masker, space=self.space)
-        self.images = _dict_to_df(id_df, data, key="images")
-        self.metadata = _dict_to_df(id_df, data, key="metadata")
-        self.texts = _dict_to_df(id_df, data, key="text")
+        # 3. Create DataFrames without triggering sorts in setters
+        self._annotations = _dict_to_df(id_df, data, key="labels")
+        self._coordinates = _dict_to_coordinates(data, masker=self._masker, space=self.space)
+        self._images = _validate_images_df(_dict_to_df(id_df, data, key="images"))
+        self._metadata = _dict_to_df(id_df, data, key="metadata")
+        self._texts = _dict_to_df(id_df, data, key="text")
         self.basepath = None
 
-        if "z_stat" in self.coordinates.columns:
-            # "z_stat" column may contain Nones
-            if not self.coordinates["z_stat"].isna().any():
-                # Ensure z_stat is treated as float
-                self.coordinates["z_stat"] = self.coordinates["z_stat"].astype(float)
+        # 4. Sort all DataFrames once
+        for df_name in ("_annotations", "_coordinates", "_images", "_metadata", "_texts"):
+            df = getattr(self, df_name)
+            if df is not None and not df.empty:
+                df.sort_values(by="id", inplace=True)
 
-                # Raise warning if coordinates dataset contains both positive and negative z_stats
-                if ((self.coordinates["z_stat"].values >= 0).any()) and (
-                    (self.coordinates["z_stat"].values < 0).any()
-                ):
-                    warnings.warn(
-                        "Coordinates dataset contains both positive and negative z_stats. "
-                        "The algorithms currently implemented in NiMARE are designed for "
-                        "one-sided tests. This might lead to unexpected results."
-                    )
+        # Handle z-statistics at initialization
+        if (hasattr(self, "_coordinates")
+                and "z_stat" in self._coordinates.columns
+                and not self._coordinates["z_stat"].isna().any()):
+            z_stats = self._coordinates["z_stat"].astype(float)
+            self._coordinates["z_stat"] = z_stats
+            pos_stats = (z_stats >= 0).any()
+            neg_stats = (z_stats < 0).any()
+            if pos_stats and neg_stats:
+                warnings.warn(
+                    "Coordinates dataset contains both positive and negative z_stats. "
+                    "The algorithms currently implemented in NiMARE are designed for "
+                    "one-sided tests. This might lead to unexpected results."
+                )
 
     def __repr__(self):
         """Show basic Dataset representation.
@@ -167,13 +176,19 @@ class Dataset(NiMAREBase):
 
         The associated setter for this property is private, as ``Dataset.ids`` is immutable.
         """
-        return self.__ids
+        return self._id_array
 
-    @ids.setter
-    def _ids(self, ids):
-        ids = np.sort(np.asarray(ids))
-        assert isinstance(ids, np.ndarray) and ids.ndim == 1
-        self.__ids = ids
+    def _set_ids(self, ids):
+        """Store IDs array directly in sorted order.
+        
+        Parameters
+        ----------
+        ids : array-like
+            Array to store as the Dataset's IDs.
+        """
+        sorted_ids = np.sort(np.asarray(ids))
+        assert isinstance(sorted_ids, np.ndarray) and sorted_ids.ndim == 1
+        self._id_array = sorted_ids
 
     @property
     def masker(self):
@@ -181,19 +196,18 @@ class Dataset(NiMAREBase):
 
         Defines the space and location of the area of interest (e.g., 'brain').
         """
-        return self.__masker
+        return self._masker
 
     @masker.setter
     def masker(self, mask):
         mask = get_masker(mask)
-        if hasattr(self, "masker") and not np.array_equal(
-            self.masker.mask_img.affine, mask.mask_img.affine
+        if hasattr(self, "_masker") and not np.array_equal(
+            self._masker.mask_img.affine, mask.mask_img.affine
         ):
             # This message does not have an associated effect,
             # since matrix indices are calculated as necessary
             LGR.warning("New masker does not match old masker. Space is assumed to be the same.")
-
-        self.__masker = mask
+        self._masker = mask
 
     @property
     def annotations(self):
@@ -204,12 +218,12 @@ class Dataset(NiMAREBase):
         be prefixed with a feature group including two underscores
         (e.g., 'Neurosynth_TFIDF__emotion').
         """
-        return self.__annotations
+        return self._annotations
 
     @annotations.setter
     def annotations(self, df):
         _validate_df(df)
-        self.__annotations = df.sort_values(by="id")
+        self._annotations = df.sort_values(by="id")
 
     @property
     def coordinates(self):
@@ -223,12 +237,12 @@ class Dataset(NiMAREBase):
         Each study has one row for each peak.
         Columns include ['x', 'y', 'z'] (peak locations in mm) and 'space' (Dataset's space).
         """
-        return self.__coordinates
+        return self._coordinates
 
     @coordinates.setter
     def coordinates(self, df):
         _validate_df(df)
-        self.__coordinates = df.sort_values(by="id")
+        self._coordinates = df.sort_values(by="id")
 
     @property
     def images(self):
@@ -245,12 +259,12 @@ class Dataset(NiMAREBase):
         different resolutions and affines. Images will be resampled as needed
         at the point where they are used, via :obj:`Dataset.masker`.
         """
-        return self.__images
+        return self._images
 
     @images.setter
     def images(self, df):
         _validate_df(df)
-        self.__images = _validate_images_df(df).sort_values(by="id")
+        self._images = _validate_images_df(df).sort_values(by="id")
 
     @property
     def metadata(self):
@@ -259,12 +273,12 @@ class Dataset(NiMAREBase):
         Each metadata field has its own column (e.g., 'sample_sizes') and each study
         has its own row.
         """
-        return self.__metadata
+        return self._metadata
 
     @metadata.setter
     def metadata(self, df):
         _validate_df(df)
-        self.__metadata = df.sort_values(by="id")
+        self._metadata = df.sort_values(by="id")
 
     @property
     def texts(self):
@@ -273,12 +287,12 @@ class Dataset(NiMAREBase):
         Each text type has its own column (e.g., 'abstract') and each study
         has its own row.
         """
-        return self.__texts
+        return self._texts
 
     @texts.setter
     def texts(self, df):
         _validate_df(df)
-        self.__texts = df.sort_values(by="id")
+        self._texts = df.sort_values(by="id")
 
     def slice(self, ids):
         """Create a new dataset with only requested IDs.
@@ -292,13 +306,23 @@ class Dataset(NiMAREBase):
         -------
         new_dset : :obj:`~nimare.dataset.Dataset`
             Reduced Dataset containing only requested studies.
+            
+        Notes
+        -----
+        This optimized version uses copy instead of deepcopy where possible,
+        and avoids DataFrame copies when not needed.
         """
-        new_dset = copy.deepcopy(self)
-        new_dset._ids = ids
+        # Create shallow copy and set IDs directly
+        new_dset = copy.copy(self)
+        new_dset._id_array = np.sort(np.asarray(ids))
+
+        # Filter DataFrames using views where possible
         for attribute in ("annotations", "coordinates", "images", "metadata", "texts"):
-            df = getattr(new_dset, attribute)
-            df = df.loc[df["id"].isin(ids)]
-            setattr(new_dset, attribute, df)
+            df = getattr(self, f"_{attribute}")
+            if df is not None and not df.empty:
+                # Create filtered view of the DataFrame
+                filtered_df = df.loc[df["id"].isin(ids)].copy()  # Copy only the filtered data
+                setattr(new_dset, f"_{attribute}", filtered_df)
 
         return new_dset
 
@@ -324,16 +348,19 @@ class Dataset(NiMAREBase):
 
         all_ids = np.concatenate((self.ids, right.ids))
         new_dset = copy.deepcopy(self)
-        new_dset._ids = all_ids
+        new_dset._id_array = np.sort(all_ids)
 
+        # Merge DataFrames efficiently
         for attribute in ("annotations", "coordinates", "images", "metadata", "texts"):
-            df1 = getattr(self, attribute)
-            df2 = getattr(right, attribute)
-            new_df = pd.concat([df1, df2], ignore_index=True, sort=False)
-            new_df.sort_values(by="id", inplace=True)
-            new_df.reset_index(drop=True, inplace=True)
-            new_df = new_df.where(~new_df.isna(), None)
-            setattr(new_dset, attribute, new_df)
+            df1 = getattr(self, f"_{attribute}")
+            df2 = getattr(right, f"_{attribute}")
+            if df1 is not None and df2 is not None:
+                # Use concat with copy=False for better performance
+                new_df = pd.concat([df1, df2], ignore_index=True, copy=False)
+                new_df.sort_values(by="id", inplace=True)
+                new_df.reset_index(drop=True, inplace=True)
+                new_df = new_df.where(~new_df.isna(), None)
+                setattr(new_dset, f"_{attribute}", new_df)
 
         new_dset.coordinates = _transform_coordinates_to_space(
             new_dset.coordinates,
@@ -436,64 +463,71 @@ class Dataset(NiMAREBase):
 
         return results
 
+    @lru_cache(maxsize=128)
     def _generic_column_getter(self, attr, ids=None, column=None, ignore_columns=None):
-        """Extract information from DataFrame-based attributes.
+        """Get data from DataFrame attributes with caching for better performance.
+        
+        Uses lru_cache decorator to cache results for repeated access patterns.
 
         Parameters
         ----------
-        attr : :obj:`str`
-            The name of the DataFrame-format Dataset attribute to search.
-        ids : :obj:`list` or None, optional
-            A list of study IDs within which to extract values.
-            If None, extract values for all studies in the Dataset.
-            Default is None.
-        column : :obj:`str` or None, optional
-            The column from which to extract values.
-            If None, a list of all columns with valid values will be returned.
-            Must be a column within Dataset.[attr].
-        ignore_columns : :obj:`list` or None, optional
-            A list of columns to ignore. Only used if ``column`` is None.
+        attr : str
+            Name of attribute to access (_annotations, _coordinates, etc)
+        ids : tuple or str or None
+            Study IDs to retrieve. Must be tuple for caching.
+        column : str or None
+            Column name to extract from DataFrame
+        ignore_columns : tuple or None
+            Columns to ignore in results. Must be tuple for caching.
 
         Returns
         -------
-        result : :obj:`list` or :obj:`str`
-            A list of values or a string, depending on if ids is a list (or None) or a string.
+        list or str
+            Requested data or first item if ids is str and column given
         """
+        # Convert lists to tuples for caching
+        if ignore_columns is not None:
+            ignore_columns = tuple(ignore_columns)
+        if ids is not None and not isinstance(ids, str):
+            ids = tuple(ids)
+
+        # Set up ignore columns
         if ignore_columns is None:
-            ignore_columns = self._id_cols
+            ignore_columns = tuple(self._id_cols)
         else:
-            ignore_columns += self._id_cols
+            ignore_columns = tuple(list(self._id_cols) + list(ignore_columns))
+        
+        # Get DataFrame and check if we need first item
+        df = getattr(self, f"_{attr}")
+        return_first = isinstance(ids, str) and column is not None
+        id_list = [ids] if isinstance(ids, str) else ids
 
-        df = getattr(self, attr)
-        return_first = False
-
-        if isinstance(ids, str) and column is not None:
-            return_first = True
-        ids = _listify(ids)
-
-        available_types = [c for c in df.columns if c not in self._id_cols]
-        if (column is not None) and (column not in available_types):
-            raise ValueError(
-                f"{column} not found in {attr}.\nAvailable types: {', '.join(available_types)}"
-            )
-
+        # Process column access
         if column is not None:
-            if ids is not None:
-                result = df[column].loc[df["id"].isin(ids)].tolist()
+            # Validate column exists
+            if column not in df.columns:
+                available = [c for c in df.columns if c not in ignore_columns]
+                raise ValueError(
+                    f"{column} not found in {attr}. Available columns: {', '.join(available)}"
+                )
+            
+            # Get data for specified column
+            if id_list is not None:
+                result = df.loc[df["id"].isin(id_list), column].tolist()
             else:
                 result = df[column].tolist()
-        else:
-            if ids is not None:
-                result = {v: df[v].loc[df["id"].isin(ids)].tolist() for v in available_types}
-                result = {k: v for k, v in result.items() if any(v)}
-            else:
-                result = {v: df[v].tolist() for v in available_types}
-            result = list(result.keys())
 
-        if return_first:
-            return result[0]
+        # Get available columns
         else:
-            return result
+            available_cols = [c for c in df.columns if c not in ignore_columns]
+            if id_list is not None:
+                subset = df[df["id"].isin(id_list)]
+                result = [c for c in available_cols if subset[c].any()]
+            else:
+                result = [c for c in available_cols if df[c].any()]
+
+        # Return first item if needed
+        return result[0] if return_first and result else result
 
     def get_labels(self, ids=None):
         """Extract list of labels for which studies in Dataset have annotations.
@@ -537,6 +571,9 @@ class Dataset(NiMAREBase):
         texts : :obj:`list`
             List of texts of requested type for selected IDs.
         """
+        # Convert ids to tuple for caching
+        if ids is not None and not isinstance(ids, str):
+            ids = tuple(ids)
         result = self._generic_column_getter("texts", ids=ids, column=text_type)
         return result
 
@@ -557,6 +594,9 @@ class Dataset(NiMAREBase):
         metadata : :obj:`list`
             List of values of requested type for selected IDs.
         """
+        # Convert ids to tuple for caching
+        if ids is not None and not isinstance(ids, str):
+            ids = tuple(ids)
         result = self._generic_column_getter("metadata", ids=ids, column=field)
         return result
 
@@ -577,13 +617,15 @@ class Dataset(NiMAREBase):
         images : :obj:`list`
             List of images of requested type for selected IDs.
         """
-        ignore_columns = ["space"]
-        ignore_columns += [c for c in self.images.columns if c.endswith("__relative")]
+        # Convert inputs to hashable types for caching
+        if ids is not None and not isinstance(ids, str):
+            ids = tuple(ids)
+        ignore_columns = tuple(["space"] + [c for c in self.images.columns if c.endswith("__relative")])
         result = self._generic_column_getter(
             "images",
             ids=ids,
             column=imtype,
-            ignore_columns=ignore_columns,
+            ignore_columns=ignore_columns
         )
         return result
 
@@ -649,15 +691,43 @@ class Dataset(NiMAREBase):
         if not np.array_equal(dset_mask.affine, mask.affine):
             LGR.warning("Mask affine does not match Dataset affine. Assuming same space.")
 
-        dset_ijk = mm2vox(self.coordinates[["x", "y", "z"]].values, mask.affine)
+        # Get cached coordinates and IDs
+        coords, coord_ids = self._coordinate_array
+        
+        # Convert to voxel coordinates once
+        dset_ijk = mm2vox(coords, mask.affine)
+        
+        # Get mask data efficiently
         mask_data = mask.get_fdata()
-        mask_coords = np.vstack(np.where(mask_data)).T
+        
+        # Create boolean mask for valid coordinates
+        valid_coords = (
+            (dset_ijk >= 0) &
+            (dset_ijk < np.array(mask_data.shape)[:, None])
+        ).all(axis=0)
 
-        # Check for presence of coordinates in mask
-        in_mask = np.any(np.all(dset_ijk[:, None] == mask_coords[None, :], axis=-1), axis=-1)
-        found_ids = list(self.coordinates.loc[in_mask, "id"].unique())
+        # Index into mask using valid coordinates
+        in_mask = np.zeros(len(dset_ijk), dtype=bool)
+        if valid_coords.any():
+            valid_ijk = dset_ijk[:, valid_coords]
+            in_mask[valid_coords] = mask_data[
+                valid_ijk[0],
+                valid_ijk[1],
+                valid_ijk[2]
+            ].astype(bool)
 
+        # Get unique IDs using numpy operations
+        found_ids = list(np.unique(coord_ids[in_mask]))
         return found_ids
+
+    # Cache coordinate array to avoid repeated DataFrame operations
+    @property
+    def _coordinate_array(self):
+        """Cache the coordinate array for faster distance calculations."""
+        if not hasattr(self, '_cached_coordinate_array'):
+            self._cached_coordinate_array = self.coordinates[["x", "y", "z"]].values
+            self._cached_coordinate_ids = self.coordinates["id"].values
+        return self._cached_coordinate_array, self._cached_coordinate_ids
 
     def get_studies_by_coordinate(self, xyz, r=20):
         """Extract list of studies with at least one focus within radius of requested coordinates.
@@ -677,9 +747,16 @@ class Dataset(NiMAREBase):
         """
         from scipy.spatial.distance import cdist
 
-        xyz = np.array(xyz)
+        xyz = np.asarray(xyz)
         assert xyz.shape[1] == 3 and xyz.ndim == 2
-        distances = cdist(xyz, self.coordinates[["x", "y", "z"]].values)
-        distances = np.any(distances <= r, axis=0)
-        found_ids = list(self.coordinates.loc[distances, "id"].unique())
+        
+        # Get cached coordinate array and IDs
+        coords, coord_ids = self._coordinate_array
+        
+        # Compute distances using vectorized operation
+        distances = cdist(xyz, coords)
+        matches = coord_ids[np.any(distances <= r, axis=0)]
+        
+        # Get unique IDs using numpy operations instead of pandas
+        found_ids = list(np.unique(matches))
         return found_ids
