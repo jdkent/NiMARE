@@ -9,6 +9,7 @@ from joblib import Memory, Parallel, delayed
 from tqdm.auto import tqdm
 
 from nimare import _version
+from nimare.meta._predictive_ale import predict_ale_cutoffs
 from nimare.meta.cbma.base import CBMAEstimator, PairwiseCBMAEstimator
 from nimare.meta.kernel import ALEKernel
 from nimare.stats import null_to_p, nullhist_to_p
@@ -204,6 +205,62 @@ class ALE(CBMAEstimator):
         )
         return description
 
+    @staticmethod
+    def _coerce_sample_size(value):
+        """Convert stored sample size metadata into a numeric value."""
+        if isinstance(value, (list, tuple, np.ndarray, pd.Series)):
+            arr = np.asarray(value, dtype=float).ravel()
+            arr = arr[~np.isnan(arr)]
+            return float(np.mean(arr)) if arr.size else np.nan
+
+        if pd.isna(value):
+            return np.nan
+
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return np.nan
+
+    def _get_predictive_inputs(self):
+        """Collect per-experiment subject and foci counts for cutoff prediction."""
+        coords = self.inputs_["coordinates"]
+        nfoci = coords.groupby("id").size()
+
+        # Prefer sample sizes already integrated into estimator inputs.
+        if "sample_size" in coords.columns and not coords["sample_size"].isna().all():
+            nsub = coords.groupby("id")["sample_size"].mean()
+        else:
+            nsub = None
+            if self.dataset is not None and getattr(self.dataset, "metadata", None) is not None:
+                metadata = self.dataset.metadata
+                if not metadata.empty:
+                    metadata = metadata.copy()
+                    if metadata.index.name != "id":
+                        if "id" in metadata.columns:
+                            metadata = metadata.set_index("id", drop=False)
+                        else:
+                            raise ValueError(
+                                "Dataset metadata must contain an 'id' column for predictive FWE."
+                            )
+                    candidate_cols = [
+                        "sample_sizes",
+                        "subjects",
+                        "Participants",
+                        "SampleSize",
+                    ]
+                    for col in candidate_cols:
+                        if col in metadata.columns:
+                            nsub = metadata.loc[nfoci.index, col].apply(self._coerce_sample_size)
+                            break
+
+        if nsub is None or nsub.isna().any():
+            raise ValueError(
+                "Sample sizes are required for predictive FWE correction but were not found in "
+                "the estimator inputs or Dataset metadata."
+            )
+
+        return nsub.values.astype(float), nfoci.values.astype(float)
+
     def _compute_summarystat_est(self, ma_values):
         stat_values = 1.0 - np.prod(1.0 - ma_values, axis=0)
 
@@ -320,6 +377,117 @@ class ALE(CBMAEstimator):
             np.add.at(ale_hist, score_idx, probabilities)
 
         self.null_distributions_["histweights_corr-none_method-approximate"] = ale_hist
+
+    def _stat_to_uncorrected_p(self, stat_value):
+        """Convert an ALE value to its uncorrected p-value."""
+        bins = self.null_distributions_.get("histogram_bins")
+        if bins is None:
+            raise RuntimeError("Histogram bins not available. Fit the estimator before correction.")
+
+        if self.null_method.startswith("approximate"):
+            weights_key = "histweights_corr-none_method-approximate"
+        elif self.null_method == "montecarlo":
+            weights_key = "histweights_corr-none_method-montecarlo"
+        elif self.null_method == "reduced_montecarlo":
+            values = self.null_distributions_.get("values_corr-none_method-reducedMontecarlo")
+            if values is None:
+                raise RuntimeError(
+                    "Null distribution values for reduced Monte Carlo were not found. "
+                    "Ensure the estimator was fitted with null_method='reduced_montecarlo'."
+                )
+
+            stat_value = np.atleast_1d(stat_value).astype(float)
+            p_val = null_to_p(stat_value, values, tail="upper")
+            return float(np.squeeze(p_val))
+        else:
+            raise RuntimeError(f"Unsupported null method '{self.null_method}'.")
+
+        weights = self.null_distributions_.get(weights_key)
+        if weights is None:
+            raise RuntimeError(
+                f"Null distribution weights '{weights_key}' not found. "
+                "Ensure the estimator was fitted with the corresponding null method."
+            )
+
+        stat_value = np.atleast_1d(stat_value).astype(float)
+
+        if np.any(stat_value < bins[0]) or np.any(stat_value > bins[-1]):
+            LGR.warning(
+                "Predicted threshold %.6f falls outside the fitted null distribution range "
+                "(%.6f, %.6f). Values will be clipped.",
+                float(stat_value.min()),
+                float(bins[0]),
+                float(bins[-1]),
+            )
+            stat_value = np.clip(stat_value, bins[0], bins[-1])
+
+        p_val = nullhist_to_p(stat_value, weights, bins)
+        return float(np.squeeze(p_val))
+
+    def _predictive_fwe_correction(self, result, alpha=0.05):
+        """Internal helper for predictive FWE correction using PyALE cutoff models."""
+        if not (0 < alpha < 1):
+            raise ValueError(f"alpha must be between 0 and 1. Received {alpha}.")
+
+        nsub, nfoci = self._get_predictive_inputs()
+        cutoffs = predict_ale_cutoffs(nsub=nsub, nfoci=nfoci)
+        vfwe_cutoff = cutoffs["vfwe"]
+
+        stat_values = result.get_map("stat", return_type="array")
+        p_uncorrected = result.get_map("p", return_type="array")
+
+        p_threshold_uncorrected = self._stat_to_uncorrected_p(vfwe_cutoff)
+        if p_threshold_uncorrected <= 0:
+            raise RuntimeError(
+                "Failed to derive an uncorrected p-value for the predicted ALE cutoff."
+            )
+
+        scale = alpha / p_threshold_uncorrected
+        p_corrected = np.clip(p_uncorrected * scale, np.finfo(float).eps, 1.0)
+
+        logp_corrected = -np.log10(p_corrected)
+        logp_corrected[np.isinf(logp_corrected)] = -np.log10(np.finfo(float).eps)
+        z_corrected = p_to_z(p_corrected, tail="one")
+
+        # Thresholded z-map for convenience
+        z_thresholded = np.zeros_like(z_corrected)
+        significant_mask = p_corrected <= alpha
+        z_thresholded[significant_mask] = z_corrected[significant_mask]
+
+        self.null_distributions_[
+            "cutoff_level-voxel_corr-fwe_method-predictive"
+        ] = vfwe_cutoff
+        self.null_distributions_[
+            "cutoff_desc-size_level-cluster_corr-fwe_method-predictive"
+        ] = cutoffs["cfwe"]
+        self.null_distributions_[
+            "cutoff_desc-tfce_corr-fwe_method-predictive"
+        ] = cutoffs["tfce"]
+
+        result.metadata.setdefault("fwe_predictive", {})
+        result.metadata["fwe_predictive"].update(
+            {
+                "alpha": alpha,
+                "scale_factor": scale,
+                "cutoffs": cutoffs,
+            }
+        )
+
+        maps = {
+            "p_level-voxel": p_corrected,
+            "logp_level-voxel": logp_corrected,
+            "z_level-voxel": z_corrected,
+            "z_desc-thresholded_level-voxel": z_thresholded,
+        }
+
+        info = {
+            "alpha": alpha,
+            "scale_factor": scale,
+            "cutoffs": cutoffs,
+            "vfwe_cutoff": vfwe_cutoff,
+        }
+
+        return maps, info
 
 
 class ALESubtraction(PairwiseCBMAEstimator):

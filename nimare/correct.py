@@ -262,7 +262,7 @@ class FWECorrector(Corrector):
 
     Parameters
     ----------
-    method : {'bonferoni', 'montecarlo'}
+    method : {'bonferroni', 'montecarlo', 'predictive'}
         The FWE correction to use. Note that the 'montecarlo' method is only available for
         a subset of Estimators. To determine what methods are available for the Estimator you're
         using, use :meth:`inspect`.
@@ -274,6 +274,8 @@ class FWECorrector(Corrector):
         For publication-quality results, 5000 or more iterations are recommended.
     n_cores : :obj:`int`, default=1
         Number of cores to use for Monte Carlo correction. Default is 1.
+    alpha : :obj:`float`, default=0.05
+        Only used if ``method='predictive'``. Target FWE rate for the predictive threshold model.
     **kwargs
         Keyword arguments to be used by the FWE correction implementation.
     """
@@ -281,14 +283,63 @@ class FWECorrector(Corrector):
     _correction_method = "fwe"
 
     def __init__(self, method="bonferroni", n_iters=None, n_cores=1, **kwargs):
-        if method not in ("bonferroni", "montecarlo"):
+        if method not in ("bonferroni", "montecarlo", "predictive"):
             raise ValueError(f"Unsupported FWE correction method '{method}'")
 
         if method == "montecarlo":
             kwargs.update({"n_iters": n_iters, "n_cores": n_cores})
+        elif method == "predictive":
+            alpha = kwargs.pop("alpha", 0.05)
+            if alpha is None:
+                alpha = 0.05
+            if not (0 < alpha < 1):
+                raise ValueError(f"'alpha' must be between 0 and 1 for predictive FWE. Received {alpha}.")
+            kwargs["alpha"] = alpha
 
         self.method = method
         self.parameters = kwargs
+
+    def transform(self, result):
+        """Apply FWE correction to a MetaResult object."""
+        if self.method == "predictive":
+            return self.correct_fwe_predictive(result)
+        return super().transform(result)
+
+    def correct_fwe_predictive(self, result):
+        """Apply predictive FWE correction using estimator-specific implementation.
+
+        This method leverages the PyALE cutoff prediction models implemented for ALE-based
+        estimators to obtain voxel-wise thresholds and rescale voxel p-values accordingly.
+        """
+        result = result.copy()
+        self._collect_inputs(result)
+        est = result.estimator
+
+        helper_name = "_predictive_fwe_correction"
+        if not hasattr(est, helper_name):
+            raise ValueError(
+                "Predictive FWE correction is currently supported only for estimators that "
+                f"implement '{helper_name}'."
+            )
+
+        maps, info = getattr(est, helper_name)(result, **self.parameters)
+
+        description = (
+            "Family-wise error rate correction was approximated using the PyALE cutoff prediction "
+            "models, which generate dataset-specific voxel, cluster, and TFCE thresholds. "
+            f"The predicted voxel-level cutoff ({info['vfwe_cutoff']:.6f}) was converted to an "
+            "uncorrected threshold and used to rescale voxel-wise p-values such that voxels "
+            f"passing the cutoff correspond to FWE p < {info['alpha']}."
+        )
+
+        corr_maps = {(k + self._name_suffix): v for k, v in maps.items()}
+        result.maps.update(corr_maps)
+        result.tables.update({})
+        result.description_ += " " + description
+        result.estimator = est
+        result.corrector = self
+
+        return result
 
     @property
     def _name_suffix(self):

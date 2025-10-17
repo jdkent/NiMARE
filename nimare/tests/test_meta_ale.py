@@ -109,6 +109,20 @@ def test_ALE_approximate_null_unit(testdata_cbma, tmp_path_factory):
         corr_results.get_map("z_corr-FWE_method-bonferroni", return_type="array"), np.ndarray
     )
 
+    # Predictive FWE (requires optional xgboost dependency)
+    import importlib.util
+
+    if importlib.util.find_spec("xgboost") is not None:
+        corr = FWECorrector(method="predictive", alpha=0.05)
+        corr_results = corr.transform(results)
+        assert isinstance(corr_results, nimare.results.MetaResult)
+        assert "logp_level-voxel_corr-FWE_method-predictive" in corr_results.maps
+        assert "p_level-voxel_corr-FWE_method-predictive" in corr_results.maps
+        assert "z_level-voxel_corr-FWE_method-predictive" in corr_results.maps
+        assert "z_desc-thresholded_level-voxel_corr-FWE_method-predictive" in corr_results.maps
+        assert "fwe_predictive" in corr_results.metadata
+        assert "cutoffs" in corr_results.metadata["fwe_predictive"]
+
     # FDR
     corr = FDRCorrector(method="indep", alpha=0.05)
     corr_results = corr.transform(results)

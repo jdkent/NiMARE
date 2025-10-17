@@ -8,6 +8,7 @@ import nibabel as nib
 import numpy as np
 import pytest
 
+from nimare.meta import ale
 from nimare.meta.utils import compute_kda_ma
 
 # set significance levels used for testing.
@@ -116,6 +117,14 @@ def _transform_res(meta, meta_res, corr):
     # all combinations of meta-analysis estimators and multiple comparison correctors
     # that do not work together
     corr_expectation = does_not_raise()
+    if getattr(corr, "method", None) == "predictive":
+        if not isinstance(meta_res.estimator, ale.ALE):
+            corr_expectation = pytest.raises(ValueError)
+        else:
+            import importlib.util
+
+            if importlib.util.find_spec("xgboost") is None:
+                corr_expectation = pytest.raises(ImportError)
 
     with corr_expectation:
         cres = corr.transform(meta_res)
