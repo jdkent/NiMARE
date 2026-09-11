@@ -374,12 +374,25 @@ def nlogp_fdr(nlogp, method="bh"):
     nlogp = _check_nlogp(nlogp)
     n_tests = nlogp.size
 
-    corrected = np.full(nlogp.shape, np.nan)
-    evaluated = ~np.isnan(nlogp)
-    if not np.any(evaluated):
-        return corrected
-    nlogp = nlogp[evaluated]
+    # The mask is one byte per test against the eight the sort already costs, so checking is
+    # far cheaper than the copies the NaN path needs. Voxelwise callers take the fast path.
+    unevaluated = np.isnan(nlogp)
+    if not unevaluated.any():
+        return _fdr_step_up(nlogp, method, n_tests)
 
+    corrected = np.full(nlogp.shape, np.nan)
+    evaluated = ~unevaluated
+    if evaluated.any():
+        corrected[evaluated] = _fdr_step_up(nlogp[evaluated], method, n_tests)
+    return corrected
+
+
+def _fdr_step_up(nlogp, method, n_tests):
+    """Run the step-up procedure over tests that were evaluated.
+
+    ``nlogp`` holds only the evaluated tests, while ``n_tests`` counts every test in the
+    family, so the two differ exactly when some test came back NaN.
+    """
     sort_idx = np.argsort(nlogp)
     revert_idx = np.argsort(sort_idx)
 
@@ -389,5 +402,4 @@ def nlogp_fdr(nlogp, method="bh"):
 
     log_adjusted = nlogp[sort_idx] - log_ecdffactor
     log_adjusted = np.minimum.accumulate(log_adjusted[::-1])[::-1]
-    corrected[evaluated] = np.minimum(log_adjusted, 0.0)[revert_idx]
-    return corrected
+    return np.minimum(log_adjusted, 0.0)[revert_idx]
