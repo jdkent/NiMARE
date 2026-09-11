@@ -264,3 +264,26 @@ def test_nlogp_bonferroni_passes_nans_through():
     np.testing.assert_allclose(
         corrected[[0, 2]], np.minimum(nlogp[[0, 2]] + np.log(3), 0.0), rtol=1e-12
     )
+
+
+@pytest.mark.parametrize("counts", [[0, 0, 0], [30, 30, 30]])
+def test_one_way_degenerate_counts_are_zero_not_nan(counts):
+    """When every count equals the expected count there is no deviation to measure.
+
+    Regression test: the expected count is the mean, so it reaches 0 or ``n`` only when
+    every count does. Both zero the variance term ``expected * (n - expected)`` and both
+    also zero the numerator, so the statistic used to come out as 0/0.
+    """
+    chi2 = one_way(np.array(counts), 30)
+
+    assert np.all(np.isfinite(chi2))
+    np.testing.assert_array_equal(chi2, np.zeros(len(counts)))
+
+
+def test_one_way_is_unchanged_away_from_the_boundary():
+    """The ordinary path must not move."""
+    counts, n = np.array([20, 0, 8]), 30
+    expected = counts.mean()
+    reference = (counts - expected) ** 2 * n / (expected * (n - expected))
+
+    np.testing.assert_allclose(one_way(counts, n), reference, rtol=1e-12)
