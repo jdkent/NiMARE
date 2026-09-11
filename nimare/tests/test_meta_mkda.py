@@ -420,3 +420,38 @@ def test_MKDAChi2_z_maps_are_unchanged_by_the_log_space_tail(testdata_cbma_full)
         signed = z_values != 0
         assert signed.any(), name
         assert np.allclose(np.abs(z_values[signed]), np.sqrt(chi2_values[signed]), rtol=1e-6), name
+
+
+def test_nullhist_to_summarystat_accumulates_tail():
+    """A null-histogram threshold must respond to p, not to the first empty bin."""
+    from nimare.meta.cbma.base import _nullhist_to_summarystat
+
+    # Upper-tail probabilities are [1, .35, .069, .0092, .00088, .00006, 0, 0].
+    counts = np.array([7435009, 3197643, 686419, 95013, 9392, 651, 23, 0], dtype=np.int64)
+    bins = np.arange(counts.size)
+
+    assert _nullhist_to_summarystat(counts, bins, 0.05) == 2
+    assert _nullhist_to_summarystat(counts, bins, 0.01) == 2
+    assert _nullhist_to_summarystat(counts, bins, 0.001) == 3
+    assert _nullhist_to_summarystat(counts, bins, 0.0001) == 4
+
+    # Degenerate inputs resolve to an end of the range rather than raising.
+    assert _nullhist_to_summarystat(np.zeros(4), np.arange(4), 0.001) == 0
+    assert _nullhist_to_summarystat(np.array([1.0, 1.0]), np.arange(2), 1.0) == 0
+
+
+def test_p_to_summarystat_is_monotone_in_p(testdata_cbma):
+    """Lowering p must never lower the cluster-forming threshold, for either null."""
+    approximate = MKDADensity(null_method="approximate", generate_description=False)
+    approximate.fit(testdata_cbma)
+    montecarlo = MKDADensity(null_method="montecarlo", n_iters=50, generate_description=False)
+    montecarlo.fit(testdata_cbma)
+
+    p_values = [0.05, 0.01, 0.005, 0.001]
+    for estimator, null_method in ((approximate, "approximate"), (montecarlo, "montecarlo")):
+        thresholds = [estimator._p_to_summarystat(p, null_method=null_method) for p in p_values]
+        assert np.all(np.diff(thresholds) >= 0), (null_method, thresholds)
+        # A threshold pinned at the first never-observed bin would sit at the top of
+        # the range and be flat in p; this is the regression that guards it.
+        assert thresholds[0] < len(estimator.inputs_["id"])
+        assert thresholds[0] < thresholds[-1]
