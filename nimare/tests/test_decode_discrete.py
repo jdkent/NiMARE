@@ -209,3 +209,31 @@ def test_neurosynth_decode_min_studies_excluding_everything_raises():
             correction=None,
             min_studies=1000,
         )
+
+
+@pytest.mark.parametrize("carried_by_all", [False, True])
+def test_neurosynth_decode_degenerate_selection_is_finite(carried_by_all):
+    """Every label absent from, or present in, every selected study still decodes.
+
+    Both put the expected count at a bound, which used to make the uniformity statistic
+    0/0 and hand back NaN for every label.
+    """
+    n_studies = 40
+    ids = [f"s{i:02d}" for i in range(n_studies)]
+    coordinates = pd.DataFrame({"id": ids, "x": 0.0, "y": 0.0, "z": 0.0, "space": "MNI"})
+    selected, unselected = ids[:20], ids[20:]
+    if carried_by_all:
+        values = [1] * len(selected) + [0] * len(unselected)
+    else:
+        values = [0] * len(selected) + [1] * len(unselected)
+    annotations = pd.DataFrame({"id": ids, "a": values, "b": values})
+
+    decoded_df = discrete.neurosynth_decode(
+        coordinates, annotations, ids=selected, features=["a", "b"], correction=None
+    )
+
+    assert decoded_df["pForward"].notna().all()
+    assert decoded_df["zForward"].notna().all()
+    # No label deviates from the average label, so the uniformity test has nothing to report.
+    np.testing.assert_allclose(decoded_df["pForward"].values, 1.0)
+    np.testing.assert_allclose(decoded_df["zForward"].values, 0.0)

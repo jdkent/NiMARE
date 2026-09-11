@@ -25,7 +25,8 @@ def one_way(data, n):
     n : :obj:`int`
         Maximum possible count (aka total number of units) for all cells in
         ``data``. If data is n_voxels long, then ``n`` is the number of studies
-        in the analysis.
+        in the analysis. This is a scalar: every count in ``data`` is drawn from the
+        same number of trials.
 
     Returns
     -------
@@ -35,12 +36,18 @@ def one_way(data, n):
     Notes
     -----
     Taken from Neurosynth.
+
+    The expected count is the mean of ``data``, so for counts bounded by ``n`` it can only
+    reach 0 or ``n`` when *every* count does. Both make the variance term
+    ``expected * (n - expected)`` zero, and both also put every count exactly at
+    expectation, so the statistic is zero rather than the 0/0 it would otherwise be.
     """
     term = np.asarray(data, dtype=np.float64)
     expected_term = np.mean(term, axis=0)
+    denominator = expected_term * (n - expected_term)
     with np.errstate(divide="ignore", invalid="ignore"):
-        chi2 = (term - expected_term) ** 2 * n / (expected_term * (n - expected_term))
-    return chi2
+        chi2 = (term - expected_term) ** 2 * n / denominator
+    return np.where(denominator == 0, 0.0, chi2)
 
 
 def two_way_counts(selected, unselected, n_selected, n_unselected):
