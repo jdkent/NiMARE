@@ -237,3 +237,28 @@ def test_neurosynth_decode_degenerate_selection_is_finite(carried_by_all):
     # No label deviates from the average label, so the uniformity test has nothing to report.
     np.testing.assert_allclose(decoded_df["pForward"].values, 1.0)
     np.testing.assert_allclose(decoded_df["zForward"].values, 0.0)
+
+
+def test_neurosynth_decode_min_studies_is_relative_to_the_analysis_universe():
+    """``ids2`` narrows the universe, and a proportional floor narrows with it.
+
+    Every other quantity in the function -- ``n_term``, ``p_term``, both chi-squared
+    tests -- ignores studies outside ``ids`` plus ``ids2``, and Neurosynth's
+    ``MetaAnalysis`` scales its own ``min_studies`` by the same union.
+    """
+    ids_all = [f"s{i:03d}" for i in range(100)]
+    coordinates = pd.DataFrame({"id": ids_all, "x": 0.0, "y": 0.0, "z": 0.0, "space": "MNI"})
+    # 'edge' appears in 2 studies: one selected, one in ids2. That is 5% of the 40-study
+    # universe but only 2% of the 100-study database.
+    values = [0] * 100
+    values[0] = values[20] = 1
+    annotations = pd.DataFrame({"id": ids_all, "edge": values, "filler": [1] * 100})
+    selected, ids2 = ids_all[:20], ids_all[20:40]
+    kwargs = dict(ids=selected, ids2=ids2, features=["edge", "filler"], correction=None)
+
+    # 3% of the universe is 1.2 studies, so 'edge' clears it on 2.
+    kept = discrete.neurosynth_decode(coordinates, annotations, min_studies=0.03, **kwargs)
+    assert "edge" in kept.index
+    # 6% of the universe is 2.4 studies, so it does not.
+    dropped = discrete.neurosynth_decode(coordinates, annotations, min_studies=0.06, **kwargs)
+    assert "edge" not in dropped.index

@@ -21,8 +21,10 @@ def _resolve_min_studies(min_studies, n_studies):
     """Return ``min_studies`` as an absolute number of studies.
 
     Mirrors the ``min_studies`` argument of Neurosynth's ``MetaAnalysis``: an integer is a
-    count of studies, while a float in (0, 1) is a proportion of the database. Neurosynth
-    used a proportion of 0.03 for the maps reported in :footcite:t:`yarkoni2011large`.
+    count of studies, while a float in (0, 1) is a proportion of ``n_studies``. Callers pass
+    the studies under analysis rather than the whole database, matching Neurosynth, which
+    scales by ``n_mappables`` and so also shrinks the floor when its ``ids2`` is given.
+    Neurosynth used a proportion of 0.03 for the maps in :footcite:t:`yarkoni2011large`.
     """
     if min_studies is None:
         return 0
@@ -462,9 +464,13 @@ class NeurosynthDecoder(Decoder):
         Default is 'bh' (Benjamini-Hochberg FDR correction).
     min_studies : :obj:`int` or :obj:`float`, optional
         Minimum number of studies in which a label must appear for it to be tested. An
-        integer is a count of studies; a float in (0, 1) is a proportion of the database.
-        Labels below the floor are dropped from the output. Default is 1, which only drops
-        labels that appear in no studies at all.
+        integer is a count of studies; a float in (0, 1) is a proportion of the studies
+        under analysis, meaning ``ids`` plus the unselected set. Passing ``ids2`` narrows
+        that universe, and the floor narrows with it, because every other quantity here is
+        computed over the same union: ``n_term``, ``p_term`` and both chi-squared tests all
+        ignore studies outside it. Neurosynth's ``MetaAnalysis`` scales its own
+        ``min_studies`` by the same union. Labels below the floor are dropped from the
+        output. Default is 1, which only drops labels that appear in no studies at all.
 
         .. versionadded:: 0.21.1
 
@@ -614,9 +620,13 @@ def neurosynth_decode(
         Default is 'bh' (Benjamini-Hochberg FDR correction).
     min_studies : :obj:`int` or :obj:`float`, optional
         Minimum number of studies in which a label must appear for it to be tested. An
-        integer is a count of studies; a float in (0, 1) is a proportion of the database.
-        Labels below the floor are dropped from the output. Default is 1, which only drops
-        labels that appear in no studies at all.
+        integer is a count of studies; a float in (0, 1) is a proportion of the studies
+        under analysis, meaning ``ids`` plus the unselected set. Passing ``ids2`` narrows
+        that universe, and the floor narrows with it, because every other quantity here is
+        computed over the same union: ``n_term``, ``p_term`` and both chi-squared tests all
+        ignore studies outside it. Neurosynth's ``MetaAnalysis`` scales its own
+        ``min_studies`` by the same union. Labels below the floor are dropped from the
+        output. Default is 1, which only drops labels that appear in no studies at all.
 
         .. versionadded:: 0.21.1
 
