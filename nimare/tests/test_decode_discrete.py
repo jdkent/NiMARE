@@ -3,10 +3,12 @@
 Tests for nimare.decode.discrete.gclda_decode_roi are in test_annotate_gclda.
 """
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from nimare.decode import discrete
+from nimare.transforms import chi2_to_nlogp
 
 
 def test_neurosynth_decode(testdata_laird):
@@ -90,3 +92,120 @@ def test_ROIAssociationDecoder(testdata_laird, roi_img):
     decoded_df = decoder.transform()
     assert isinstance(decoded_df, pd.DataFrame)
     assert decoded_df.shape == (len(labels), 1)
+
+
+def _rare_label_inputs():
+    """Build inputs where one label is far rarer than the average selected-label count.
+
+    The rare label is what used to drive the one-way chi-squared statistic negative: its
+    database-wide count sat below the mean number of selected studies per label.
+    """
+    n_studies = 60
+    ids = [f"study-{i:02d}" for i in range(n_studies)]
+    coordinates = pd.DataFrame(
+        {"id": ids, "x": 0.0, "y": 0.0, "z": 0.0, "space": "MNI"},
+    )
+    # Two common labels carried by most studies, and one label carried by a single study.
+    annotations = pd.DataFrame(
+        {
+            "id": ids,
+            "common1": [1] * 50 + [0] * 10,
+            "common2": [1] * 40 + [0] * 20,
+            "rare": [1] + [0] * (n_studies - 1),
+        }
+    )
+    return coordinates, annotations, ids
+
+
+def test_neurosynth_decode_rare_label_is_finite():
+    """A label rarer than the mean selected count must not yield a negative chi-squared.
+
+    Regression test: ``one_way`` was called with the per-label database count as ``n``
+    rather than the number of selected studies, so ``n - expected`` went negative for rare
+    labels and the statistic came back NaN.
+    """
+    coordinates, annotations, ids = _rare_label_inputs()
+    decoded_df = discrete.neurosynth_decode(
+        coordinates,
+        annotations,
+        ids=ids[:30],
+        features=["common1", "common2", "rare"],
+        correction=None,
+        min_studies=None,
+    )
+    assert decoded_df["pForward"].notna().all()
+    assert decoded_df["zForward"].notna().all()
+
+
+def test_neurosynth_decode_one_nan_does_not_erase_the_correction():
+    """With BH correction on, every label still gets a finite corrected p-value."""
+    coordinates, annotations, ids = _rare_label_inputs()
+    decoded_df = discrete.neurosynth_decode(
+        coordinates,
+        annotations,
+        ids=ids[:30],
+        features=["common1", "common2", "rare"],
+        correction="bh",
+        min_studies=None,
+    )
+    assert decoded_df[["pForward", "zForward", "pReverse", "zReverse"]].notna().all().all()
+
+
+def test_neurosynth_decode_forward_matches_the_reference_formula():
+    """The forward statistic is a one-sample chi-squared on ``n_selected`` trials."""
+    coordinates, annotations, ids = _rare_label_inputs()
+    features = ["common1", "common2", "rare"]
+    selected = ids[:30]
+    decoded_df = discrete.neurosynth_decode(
+        coordinates,
+        annotations,
+        ids=selected,
+        features=features,
+        correction=None,
+        min_studies=None,
+    )
+
+    n_selected = len(selected)
+    observed = annotations.set_index("id").loc[selected, features].ge(0.001).sum(axis=0).values
+    expected = observed.mean()
+    # The two-cell chi-squared written out longhand, as Neurosynth's stats.one_way has it.
+    chi2 = (observed - expected) ** 2 / expected + (
+        (n_selected - observed) - (n_selected - expected)
+    ) ** 2 / (n_selected - expected)
+    np.testing.assert_allclose(
+        decoded_df["pForward"].values, np.exp(chi2_to_nlogp(chi2, 1)), rtol=1e-10
+    )
+
+
+def test_neurosynth_decode_min_studies_drops_rare_labels():
+    """``min_studies`` removes labels below the floor, as a count or as a proportion."""
+    coordinates, annotations, ids = _rare_label_inputs()
+    features = ["common1", "common2", "rare"]
+    kwargs = dict(ids=ids[:30], features=features, correction=None)
+
+    kept_all = discrete.neurosynth_decode(coordinates, annotations, min_studies=1, **kwargs)
+    assert sorted(kept_all.index) == sorted(features)
+
+    by_count = discrete.neurosynth_decode(coordinates, annotations, min_studies=5, **kwargs)
+    assert "rare" not in by_count.index
+    assert sorted(by_count.index) == ["common1", "common2"]
+
+    # 0.03 of 60 studies is 1.8, so the single-study label falls below the floor.
+    by_proportion = discrete.neurosynth_decode(
+        coordinates, annotations, min_studies=0.03, **kwargs
+    )
+    assert "rare" not in by_proportion.index
+
+
+def test_neurosynth_decode_min_studies_excluding_everything_raises():
+    """A floor no label can reach is an error rather than an empty table."""
+    coordinates, annotations, ids = _rare_label_inputs()
+    with pytest.raises(ValueError, match="No labels reach min_studies"):
+        discrete.neurosynth_decode(
+            coordinates,
+            annotations,
+            ids=ids[:30],
+            features=["common1", "common2", "rare"],
+            correction=None,
+            min_studies=1000,
+        )
