@@ -337,7 +337,13 @@ def brainmap_decode(
     # the upper tail alone, so this is a one-sided test of enrichment: a small p-value can only
     # mean more selected studies carry the label than the selection rate would predict. The
     # z-value is therefore one-tailed and unsigned; there is no lower tail for it to report.
-    nlogp_fi = binom.logsf(k=n_selected_term, n=n_term_foci, p=p_selected)
+    #
+    # ``logsf(k)`` is P(X > k), so the observation itself has to be put back in: the one-sided
+    # p-value for observing ``k`` is P(X >= k) == logsf(k - 1). Without the shift a label whose
+    # every focus falls inside the selection gets P(X > n) == 0 and an infinite z, and a label
+    # observed zero times gets P(X > 0), which is small whenever the label is rare. ``logsf(-1)``
+    # is log(1), so a zero count needs no special case.
+    nlogp_fi = binom.logsf(k=n_selected_term - 1, n=n_term_foci, p=p_selected)
 
     # Two-way chi-square test for association of activation
     cells = np.array(
