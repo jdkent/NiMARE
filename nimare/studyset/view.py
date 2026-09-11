@@ -24,6 +24,7 @@ import numpy as np
 from nimare.studyset import layout
 from nimare.studyset.columns import join_names, missing_names, sorted_ranges
 from nimare.studyset.store import derived
+from nimare.utils import _get_voxel_values
 
 __all__ = ["Context", "View"]
 
@@ -288,10 +289,9 @@ class View:
         """
         xyz, _, _ = layout.harmonized_coordinates(self.store, self.context.space)
         inv = np.linalg.inv(affine)
-        with np.errstate(invalid="ignore"):
-            ijk = (xyz @ inv[:3, :3].T + inv[:3, 3]).astype(np.int32)
-        ijk = np.clip(ijk, 0, np.asarray(mask_data.shape) - 1)
-        return mask_data[ijk[:, 0], ijk[:, 1], ijk[:, 2]] > 0
+        ijk = xyz @ inv[:3, :3].T + inv[:3, 3]
+        values, in_bounds = _get_voxel_values(mask_data, ijk)
+        return (values > 0) & in_bounds
 
     def points_near(self, xyz, radius):
         """Point-level boolean for foci within ``radius`` mm of any of ``xyz``."""
