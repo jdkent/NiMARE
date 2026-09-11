@@ -151,7 +151,7 @@ class View:
         if "point_flags" not in self._cache:
             mask = self.point_mask
             if mask is not None:
-                mask = np.asarray(mask, dtype=bool)
+                mask = np.ascontiguousarray(np.asarray(mask, dtype=bool))
             self._cache["point_flags"] = (
                 None if mask is None or mask.all() else mask.view(np.uint8).tobytes()
             )
