@@ -357,7 +357,15 @@ def nlogp_fdr(nlogp, method="bh"):
     Returns
     -------
     :obj:`numpy.ndarray`
-        Natural logarithms of the corrected p-values.
+        Natural logarithms of the corrected p-values. NaN entries stay NaN.
+
+    Notes
+    -----
+    A NaN is a test that could not be evaluated, so it takes no part in the step-up procedure
+    and comes back as NaN. It is still counted in the number of tests, which is the more
+    conservative of the two readings and the one R's ``p.adjust`` takes: NAs are dropped from
+    the procedure while ``n`` stays at the full length of the input. Without this, a single
+    NaN would win every ``minimum.accumulate`` comparison and erase the whole correction.
 
     References
     ----------
@@ -366,10 +374,29 @@ def nlogp_fdr(nlogp, method="bh"):
     nlogp = _check_nlogp(nlogp)
     n_tests = nlogp.size
 
+    # The mask is one byte per test against the eight the sort already costs, so checking is
+    # far cheaper than the copies the NaN path needs. Voxelwise callers take the fast path.
+    unevaluated = np.isnan(nlogp)
+    if not unevaluated.any():
+        return _fdr_step_up(nlogp, method, n_tests)
+
+    corrected = np.full(nlogp.shape, np.nan)
+    evaluated = ~unevaluated
+    if evaluated.any():
+        corrected[evaluated] = _fdr_step_up(nlogp[evaluated], method, n_tests)
+    return corrected
+
+
+def _fdr_step_up(nlogp, method, n_tests):
+    """Run the step-up procedure over tests that were evaluated.
+
+    ``nlogp`` holds only the evaluated tests, while ``n_tests`` counts every test in the
+    family, so the two differ exactly when some test came back NaN.
+    """
     sort_idx = np.argsort(nlogp)
     revert_idx = np.argsort(sort_idx)
 
-    log_ecdffactor = np.log(np.arange(1, n_tests + 1) / n_tests)
+    log_ecdffactor = np.log(np.arange(1, nlogp.size + 1) / n_tests)
     if method == "by":
         log_ecdffactor = log_ecdffactor - np.log(np.sum(1 / np.arange(1, n_tests + 1)))
 
