@@ -526,7 +526,11 @@ def test_image_references_resolve_against_the_view(tmp_path):
     rooted = nimads.Studyset(doc, target=None, basepath=str(tmp_path))
     image = rooted.analyses[0].images[0]
 
-    assert image.filename == str(tmp_path / "imgs" / "z.nii.gz")
+    # Compared as paths, not as strings: joining a POSIX-style reference onto a
+    # Windows base path gives mixed separators, which open fine and compare equal
+    # as paths but not as text.
+    assert Path(image.filename) == tmp_path / "imgs" / "z.nii.gz"
+    assert Path(image.filename).is_file()
     assert nimads.Studyset(doc, target=None).analyses[0].images[0].filename == "imgs/z.nii.gz"
     # A URL is already a location; only relative paths are resolved.
     assert image.url == image_doc["url"]
@@ -536,5 +540,6 @@ def test_image_references_resolve_against_the_view(tmp_path):
     # Both doors into a Dataset resolve the same way.
     from nimare.io import convert_nimads_to_dataset
 
-    assert convert_nimads_to_dataset(rooted).images["z"].tolist() == [image.filename]
-    assert rooted.to_dataset().images["z"].tolist() == [image.filename]
+    direct = convert_nimads_to_dataset(rooted).images["z"].tolist()
+    assert direct == rooted.to_dataset().images["z"].tolist()
+    assert [Path(p) for p in direct] == [Path(image.filename)]
