@@ -270,6 +270,12 @@ def brainmap_decode(
         label: 'pForward', 'zForward', 'likelihoodForward', 'pReverse',
         'zReverse', and 'probReverse'.
 
+    Notes
+    -----
+    Forward inference uses the upper tail of a binomial distribution, so it is a one-sided
+    test of enrichment and 'zForward' is a one-tailed, non-negative z-value. Forward
+    inference here cannot report depletion; 'zReverse' remains two-tailed and signed.
+
     See Also
     --------
     :func:`~nimare.decode.discrete.BrainMapDecoder`: The associated class for this method.
@@ -327,11 +333,11 @@ def brainmap_decode(
     p_term_g_selected = p_term_g_selected / np.nansum(p_term_g_selected)  # Normalize
 
     # Significance testing
-    # Forward inference significance is determined with a binomial distribution
+    # Forward inference significance is determined with a binomial distribution. ``logsf`` is
+    # the upper tail alone, so this is a one-sided test of enrichment: a small p-value can only
+    # mean more selected studies carry the label than the selection rate would predict. The
+    # z-value is therefore one-tailed and unsigned; there is no lower tail for it to report.
     nlogp_fi = binom.logsf(k=n_selected_term, n=n_term_foci, p=p_selected)
-    sign_fi = np.sign(
-        n_selected_term - np.mean(n_selected_term)
-    ).ravel()  # pylint: disable=no-member
 
     # Two-way chi-square test for association of activation
     cells = np.array(
@@ -364,7 +370,7 @@ def brainmap_decode(
     # Compute z-values
     p_corr_fi = _clip_p_values(np.exp(nlogp_corr_fi), dtype=np.float64, copy=False)
     p_corr_ri = _clip_p_values(np.exp(nlogp_corr_ri), dtype=np.float64, copy=False)
-    z_corr_fi = nlogp_to_z(nlogp_corr_fi, "two") * sign_fi
+    z_corr_fi = nlogp_to_z(nlogp_corr_fi, "one")
     z_corr_ri = nlogp_to_z(nlogp_corr_ri, "two") * sign_ri
 
     # Effect size

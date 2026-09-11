@@ -357,7 +357,15 @@ def nlogp_fdr(nlogp, method="bh"):
     Returns
     -------
     :obj:`numpy.ndarray`
-        Natural logarithms of the corrected p-values.
+        Natural logarithms of the corrected p-values. NaN entries stay NaN.
+
+    Notes
+    -----
+    A NaN is a test that could not be evaluated, so it takes no part in the step-up procedure
+    and comes back as NaN. It is still counted in the number of tests, which is the more
+    conservative of the two readings and the one R's ``p.adjust`` takes: NAs are dropped from
+    the procedure while ``n`` stays at the full length of the input. Without this, a single
+    NaN would win every ``minimum.accumulate`` comparison and erase the whole correction.
 
     References
     ----------
@@ -366,13 +374,20 @@ def nlogp_fdr(nlogp, method="bh"):
     nlogp = _check_nlogp(nlogp)
     n_tests = nlogp.size
 
+    corrected = np.full(nlogp.shape, np.nan)
+    evaluated = ~np.isnan(nlogp)
+    if not np.any(evaluated):
+        return corrected
+    nlogp = nlogp[evaluated]
+
     sort_idx = np.argsort(nlogp)
     revert_idx = np.argsort(sort_idx)
 
-    log_ecdffactor = np.log(np.arange(1, n_tests + 1) / n_tests)
+    log_ecdffactor = np.log(np.arange(1, nlogp.size + 1) / n_tests)
     if method == "by":
         log_ecdffactor = log_ecdffactor - np.log(np.sum(1 / np.arange(1, n_tests + 1)))
 
     log_adjusted = nlogp[sort_idx] - log_ecdffactor
     log_adjusted = np.minimum.accumulate(log_adjusted[::-1])[::-1]
-    return np.minimum(log_adjusted, 0.0)[revert_idx]
+    corrected[evaluated] = np.minimum(log_adjusted, 0.0)[revert_idx]
+    return corrected
