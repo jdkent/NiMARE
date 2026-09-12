@@ -492,7 +492,7 @@ def mm2vox(xyz, affine):
     http://blog.chrisgorgolewski.org/2014/12/how-to-convert-between-voxel-and-mm.html
     """
     with np.errstate(invalid="ignore"):
-        ijk = nib.affines.apply_affine(np.linalg.inv(affine), xyz).astype(int)
+        ijk = np.round(nib.affines.apply_affine(np.linalg.inv(affine), xyz)).astype(int)
     return ijk
 
 
