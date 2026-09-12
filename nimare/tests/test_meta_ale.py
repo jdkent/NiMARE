@@ -65,7 +65,8 @@ def _dense_ale_reference(ma_values):
     hist_bins = np.round(np.arange(0, max_poss_ale + (1.5 * step_size), step_size), 5)
 
     bin_centers = hist_bins
-    bin_edges = np.append(bin_centers, bin_centers[-1] + step_size)
+    # hist_bins holds centres, so the edges sit half a step either side of them.
+    bin_edges = np.append(bin_centers - (step_size / 2), bin_centers[-1] + (step_size / 2))
     n_mask_voxels = ma_values.shape[1]
 
     ale_hist = None
@@ -86,7 +87,7 @@ def _dense_ale_reference(ma_values):
         ale_idx = np.where(ale_hist > 0)[0]
         exp_idx = np.where(exp_hist > 0)[0]
         ale_scores = 1 - np.outer((1 - bin_centers[exp_idx]), (1 - bin_centers[ale_idx])).ravel()
-        score_idx = np.floor(ale_scores * inv_step_size).astype(int)
+        score_idx = np.round(ale_scores * inv_step_size).astype(int)
         probabilities = np.outer(exp_hist[exp_idx], ale_hist[ale_idx]).ravel()
         ale_hist = np.zeros(ale_hist.shape)
         np.add.at(ale_hist, score_idx, probabilities)
@@ -121,7 +122,7 @@ def _study_ma_histogram_reference(
     """Reference implementation for ALE study-histogram binning."""
     exp_hist = np.zeros(n_bins, dtype=np.float64)
     for value in study_ma_values:
-        idx = int(np.floor(value * inv_step_size))
+        idx = int(np.round(value * inv_step_size))
         idx = min(max(idx, 0), n_bins - 1)
         exp_hist[idx] += 1.0
 
@@ -229,7 +230,7 @@ def _update_ale_histogram_reference(
         exp_one_minus = 1.0 - exp_center
         for i_ale in range(ale_idx.shape[0]):
             score = 1.0 - exp_one_minus * (1.0 - bin_centers[ale_idx[i_ale]])
-            score_idx = int(np.floor(score * inv_step_size))
+            score_idx = int(np.round(score * inv_step_size))
             score_idx = min(max(score_idx, 0), n_bins - 1)
             out[score_idx] += exp_prob * ale_probs[i_ale]
     return out
@@ -498,7 +499,12 @@ def test_ALE_csr_approximate_null_matches_dense_reference():
 
 
 def test_ALE_study_ma_histogram_edge_bins():
-    """Study histogram binning should match the legacy floor-based implementation at edges."""
+    """Study histogram binning sends each value to its nearest bin centre.
+
+    The grid is bin *centres*, so a value a hair below a centre belongs in that
+    centre's bin. Flooring would push it one bin down, once per study in the
+    convolution that follows, which biases the whole null low.
+    """
     inv_step_size = 10.0
     n_bins = 11
     n_zero_voxels = 3
@@ -524,6 +530,8 @@ def test_ALE_study_ma_histogram_edge_bins():
     )
 
     np.testing.assert_allclose(actual, expected)
+    # 0.099999999 belongs with the bin centred at 0.1, not the one at 0.0.
+    assert actual[1] > 0.0
 
 
 def test_ALE_update_histogram_edge_bins():

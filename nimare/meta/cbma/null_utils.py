@@ -121,7 +121,7 @@ def _study_ma_histogram(study_ma_values, n_zero_voxels, mask_voxel_recip, inv_st
     """Bin one study's nonzero ALE values onto the fixed approximate-null grid."""
     exp_hist = np.zeros(n_bins, dtype=np.float64)
     for i_val in range(study_ma_values.shape[0]):
-        idx = int(study_ma_values[i_val] * inv_step_size)
+        idx = int(round(study_ma_values[i_val] * inv_step_size))
         if idx < 0:
             idx = 0
         elif idx >= n_bins:
@@ -147,7 +147,7 @@ def _update_ale_histogram(
         exp_one_minus = 1.0 - exp_center
         for i_ale in range(ale_idx.shape[0]):
             score = 1.0 - exp_one_minus * (1.0 - bin_centers[ale_idx[i_ale]])
-            score_idx = int(score * inv_step_size)
+            score_idx = int(round(score * inv_step_size))
             if score_idx < 0:
                 score_idx = 0
             elif score_idx >= n_bins:
