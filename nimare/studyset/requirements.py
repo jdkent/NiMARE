@@ -58,6 +58,13 @@ def null_analyses(store):
     return got
 
 
+def _name_ids(ids, limit=10):
+    """Join the first ``limit`` ids, saying how many more there are."""
+    names = [str(i) for i in ids[:limit]]
+    more = len(ids) - len(names)
+    return ", ".join(names) + (f" and {more} more" if more > 0 else "")
+
+
 @dataclass(frozen=True)
 class Coordinates:
     """Foci, grouped by analysis, in ``space``.
@@ -87,14 +94,16 @@ class Coordinates:
         sizes = store.point_offsets[view.index + 1] - store.point_offsets[view.index]
         dropped = ~valid & (sizes == 0)
         declared = null_analyses(store)[view.index]
-        nulls = int((dropped & declared).sum())
+        is_null = dropped & declared
+        nulls = int(is_null.sum())
         others = int((dropped & ~declared).sum())
         if nulls:
             LGR.warning(
                 f"{nulls} of {len(valid)} analyses are null analyses (outcome "
                 f"'{NULL_OUTCOME}', no foci) and were left out, because this algorithm does not "
-                "count analyses without foci (only MKDAChi2 does). They are listed in "
-                "MetaResult.dropped_null_analyses."
+                "count analyses without foci (only MKDAChi2 does): "
+                f"{_name_ids(store.analysis_full_key[view.index][is_null])}. They are listed in "
+                "MetaResult.dropped_null_analyses (Decoder.dropped_null_analyses for a decoder)."
             )
         if others:
             LGR.info(

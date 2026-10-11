@@ -248,3 +248,42 @@ def test_null_analyses_survive_slice_and_parquet(tmp_path):
     loaded = Studyset.from_parquet(tmp_path / "ss")
     flags = dict(zip(loaded.ids, null_analyses(loaded.store)[loaded._view.index]))
     assert flags == {"g0-a": False, "g1-a": False, "gnull0-a": True, "gnull1-a": True}
+
+
+def test_a_studyset_of_only_null_analyses_is_reported_before_the_fit_fails(caplog):
+    """With every analysis a declared null the fit still fails, but the warning says why."""
+    with caplog.at_level(logging.WARNING, logger="nimare.studyset.requirements"):
+        with pytest.raises(ValueError, match="no data for 'coordinates'"):
+            ALE(null_method="approximate").fit(_studyset("g", [], n_null=2))
+    assert "2 of 2 analyses are null analyses" in caplog.text
+    assert "gnull0-a, gnull1-a" in caplog.text
+
+
+def test_warning_names_the_dropped_analyses(caplog):
+    """The warning carries the ids, not just the count."""
+    with caplog.at_level(logging.WARNING, logger="nimare.studyset.requirements"):
+        ALE(null_method="approximate").fit(_studyset("g", [ORIGIN, ELSEWHERE], n_null=2))
+    assert "gnull0-a, gnull1-a" in caplog.text
+
+
+def test_decoder_reports_dropped_null_analyses(testdata_laird_studyset, roi_img, caplog):
+    """A decoder's fit returns nothing, so its dropped nulls are on the decoder itself."""
+    from nimare.decode.discrete import ROIAssociationDecoder
+
+    doc = testdata_laird_studyset.to_dict()
+    nulled = []
+    for study in doc["studies"][:2]:
+        analysis = study["analyses"][0]
+        analysis["points"] = []
+        analysis["metadata"] = dict(analysis.get("metadata") or {}, **{OUTCOME_KEY: NULL_OUTCOME})
+        nulled.append(f"{study['id']}-{analysis['id']}")
+    studyset = Studyset(doc)
+    assert sorted(studyset.ids[null_analyses(studyset.store)]) == sorted(nulled)
+
+    decoder = ROIAssociationDecoder(masker=roi_img)
+    assert decoder.dropped_null_analyses is None
+    with caplog.at_level(logging.WARNING, logger="nimare.studyset.requirements"):
+        decoder.fit(studyset)
+    assert sorted(decoder.dropped_null_analyses) == sorted(nulled)
+    assert "2 of" in caplog.text and nulled[0] in caplog.text
+    assert "Decoder.dropped_null_analyses" in caplog.text

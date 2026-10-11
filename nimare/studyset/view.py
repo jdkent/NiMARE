@@ -385,7 +385,8 @@ class View:
             if len(self.index) and not ok.any():
                 unsatisfied.append(requirement)
             valid &= ok
-        if drop_invalid and not valid.all() and not unsatisfied:
+        if drop_invalid and not valid.all():
+            # Also when nothing is satisfiable, so a studyset of only declared nulls is told why.
             for requirement in requirements:
                 report = getattr(requirement, "report_dropped", None)
                 if report is not None:
